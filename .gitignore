@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# directories
+model/checkpoints/
+model/output
+model/utils/__pycache__/
+model/unet/__pycache__/
+
 # C extensions
 *.so
 
