@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from einops import rearrange
 import segmentation_models_pytorch as smp
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
-from disstl.models.unet_1 import UNet_VAE_RQ_scheme1_encoder, UNet_VAE_Stacked
+# from disstl.models.unet_1 import UNet_VAE_RQ_scheme1_encoder, UNet_VAE_Stacked
 from disstl.models.cpc import CPC
 from disstl.models.encoder import Autoregressor2d, Encoder
 
