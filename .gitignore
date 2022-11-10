@@ -4,10 +4,10 @@ __pycache__/
 *$py.class
 
 # directories
-model/checkpoints/
-model/output
-model/utils/__pycache__/
-model/unet/__pycache__/
+models/checkpoints/
+models/output
+models/utils/__pycache__/
+models/unet/__pycache__/
 
 # C extensions
 *.so
