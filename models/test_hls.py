@@ -184,11 +184,6 @@ def reverse_chunks(chunks, num_seq):
                 all_arr[j,i:i+num_seq,:,:,:,:] = array
             del array
 
-    # for j in range(I):
-    #     all_arr[j,L2+num_seq-1,:,:,:,:] = chunks[j,L2-1,-1,:,:,:,:]
-
-    # print(all_arr[0,-1,:,:,:,:])
-
     return all_arr
 
 def reverse_seq(window, seq_length):
@@ -286,9 +281,6 @@ def main():
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
-        # stach temporal dim to temporal mean
-        # ts = np.mean(ts, axis=0)
-
         temp_ts_set.append(ts)
         temp_mask_set.append(mask)
 
@@ -309,7 +301,6 @@ def main():
     print(f'chunk sequence shape: {new_set.shape}')
 
     (A,L,N,SL,C,H,W) = new_set.shape
-    # new_set = new_set.reshape(L,N,SL,C,H,W)
 
     test_set = tsDataset(new_set, train_mask_set)
 
