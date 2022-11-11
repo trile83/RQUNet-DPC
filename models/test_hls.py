@@ -19,6 +19,7 @@ from tqdm import tqdm
 import argparse
 import h5py
 import logging
+import cv2
 import csv
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, classification_report
 import rioxarray as rxr
@@ -239,6 +240,36 @@ def get_accuracy(y_pred, y_true):
     return accuracy, precision, recall, f1_score
 
 
+def padding_ts(ts, mask, padding_size=10):
+    '''
+    Args:
+        ts: time series input
+        mask: ground truth
+    Return:
+        padded_ts
+        padded_mask
+    '''
+    extra_top = extra_bottom = extra_left = extra_right = padding_size
+    npad_ts = ((0, 0), (extra_top, extra_bottom), (extra_left, extra_right))
+    npad_mask = ((extra_top, extra_bottom), (extra_left, extra_right))
+
+    padded_ts = np.zeros((ts.shape[0],ts.shape[1],ts.shape[2]+padding_size*2,ts.shape[3]+padding_size*2))
+    for i in range(ts.shape[0]):
+        # pad border
+
+        p_ts_i = np.copy(np.pad(ts[i], (npad_ts), mode='reflect'))
+
+        padded_ts[i,:,:,:] = p_ts_i
+
+        # print('padded_ts i',padded_ts.shape)
+
+    padded_mask = np.copy(np.pad(mask, (npad_mask), mode='constant', constant_values = 0))
+
+    del p_ts_i
+
+    return padded_ts, padded_mask
+
+
 def main():
     torch.manual_seed(0)
     np.random.seed(0)
@@ -249,12 +280,12 @@ def main():
     # prepare data
     ### hls data
     filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as f:
+    with h5py.File(filename, "r") as file:
         # print("Keys: %s" % f.keys())
-        ts_arr = f['Tappan06_ts'][()]
-        mask_arr = f['Tappan06_mask'][()]
+        ts_arr = file['Tappan13_ts'][()]
+        mask_arr = file['Tappan13_mask'][()]
 
-    ts_name = 'TS06'
+    ts_name = 'TS13'
 
     # get RGB image
     # ts_arr = ts_arr[:,1:4,:,:]
@@ -262,8 +293,10 @@ def main():
 
     seq_length = 5
     num_seq = 4
-    input_size = 64
+    input_size = 48
     total_ts_len = 10 # L
+
+    padding_size = 8
 
     print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     print(f'data dict tappan01 mask shape: {mask_arr.shape}')
@@ -272,7 +305,7 @@ def main():
     train_mask_set = []
 
     ## get different chips in the Tappan Square for multiple time series
-    iteration = 30
+    iteration = 20
 
     temp_ts_set = []
     temp_mask_set = []
@@ -280,6 +313,8 @@ def main():
         ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
+
+        ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
         temp_ts_set.append(ts)
         temp_mask_set.append(mask)
@@ -338,6 +373,10 @@ def main():
     ### 13 bands
     dpc_checkpoint = f'{str(model_dir)}dpc_13band_epoch158.pth'
     unetsegment_checkpoint = f'{str(model_dir)}unetsegment_13band_epoch_158.pth'
+
+    ### 13 band padded
+    # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'
+    # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_pad_13band_epoch_188.pth'
 
     # model = nn.DataParallel(model)
 
@@ -475,19 +514,19 @@ def main():
             plt.figure(figsize=(20,20))
             plt.subplot(1,3,1)
             plt.title("Image")
-            image = np.transpose(z[0,5,1:4,:,:], (1,2,0))
+            image = np.transpose(z[0,5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             plt.imshow(rescale_truncate(image))
             plt.subplot(1,3,2)
             plt.title("Segmentation Label")
-            image = np.transpose(batch['mask'].numpy()[0,:,:], (0,1))
+            image = np.transpose(batch['mask'].numpy()[0,padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
             plt.imshow(image)
         
             plt.subplot(1,3,3)
             plt.title(f"Segmentation w accuracy {accuracy}")
-            image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
+            image = np.transpose(index_array[0,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (0,1))
             plt.imshow(image)
-            plt.savefig(f"{str(data_dir)}{str(idx)}_ts_{idx}_{i}_old.png")
+            plt.savefig(f"{str(data_dir)}{ts_name}_{str(idx)}.png")
 
             plt.close()
 
