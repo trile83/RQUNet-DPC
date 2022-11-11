@@ -19,6 +19,7 @@ from tqdm import tqdm
 import argparse
 import h5py
 import logging
+import cv2
 import rioxarray as rxr
 from tensorboardX import SummaryWriter
 
@@ -37,7 +38,7 @@ parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -227,6 +228,40 @@ def chipper(ts_stack, mask, input_size=32):
 
     return out_ts, out_mask
 
+def padding_ts(ts, mask, padding_size=10):
+    '''
+    Args:
+        ts: time series input
+        mask: ground truth
+    Return:
+        padded_ts
+        padded_mask
+    '''
+    extra_top = extra_bottom = extra_left = extra_right = padding_size
+    npad_ts = ((0, 0), (extra_top, extra_bottom), (extra_left, extra_right))
+    npad_mask = ((extra_top, extra_bottom), (extra_left, extra_right))
+
+    padded_ts = np.zeros((ts.shape[0],ts.shape[1],ts.shape[2]+padding_size*2,ts.shape[3]+padding_size*2))
+    for i in range(ts.shape[0]):
+        # pad border
+
+        p_ts_i = np.copy(np.pad(ts[i], (npad_ts), mode='reflect'))
+
+        padded_ts[i,:,:,:] = p_ts_i
+
+        # print('padded_ts i',padded_ts.shape)
+
+    plt.imshow(np.transpose(padded_ts[5,1:4,:,:], (1,2,0)))
+    plt.savefig('/home/geoint/tri/dpc_test_out/train_input_im.png')
+    plt.close()
+
+    padded_mask = np.copy(np.pad(mask, (npad_mask), mode='constant', constant_values = 0))
+    padded_mask = padded_mask.reshape((padded_mask.shape[0], padded_mask.shape[1]))
+
+    del p_ts_i
+
+    return padded_ts, padded_mask
+
 
 def main():
     torch.manual_seed(0)
@@ -245,8 +280,11 @@ def main():
 
     seq_length = 6
     num_seq = 4
-    input_size = 64
+    input_size = 64 ## 64
     total_ts_len = 10 # L
+
+    padding_size = 8
+    
 
     # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
@@ -268,8 +306,7 @@ def main():
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
-        # stach temporal dim to temporal mean
-        # ts = np.mean(ts, axis=0)
+        # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
         temp_ts_set.append(ts)
         temp_mask_set.append(mask)
@@ -472,7 +509,7 @@ def main():
                             'state_dict': model.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'dpc_13band_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, 'dpc_pad_13band_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             # save unet segment weights
             save_checkpoint({'epoch': epoch+1,
@@ -480,7 +517,7 @@ def main():
                             'state_dict': unet_segment.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'unetsegment_13band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, 'unetsegment_pad_13band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
 
     plt.plot(train_loss_lst, color ="blue")
     plt.plot(val_loss_lst, color = "red")
