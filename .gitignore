@@ -8,6 +8,7 @@ models/checkpoints/
 models/output
 models/utils/__pycache__/
 models/unet/__pycache__/
+log_tmp/
 
 # C extensions
 *.so
