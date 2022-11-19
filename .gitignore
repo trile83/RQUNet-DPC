@@ -9,6 +9,7 @@ models/output
 models/utils/__pycache__/
 models/unet/__pycache__/
 log_tmp/
+data/
 
 # C extensions
 *.so
