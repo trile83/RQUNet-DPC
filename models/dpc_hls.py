@@ -272,7 +272,7 @@ def main():
 
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/old/hls_data.hdf5"
     with h5py.File(filename, "r") as f:
         # print("Keys: %s" % f.keys())
         ts_arr = f['Tappan01_ts'][()]
