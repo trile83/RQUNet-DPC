@@ -279,13 +279,14 @@ def main():
 
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/old/hls_data.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % f.keys())
-        ts_arr = file['Tappan13_ts'][()]
-        mask_arr = file['Tappan13_mask'][()]
+        ts_arr = file['Tappan02_ts'][()]
+        mask_arr = file['Tappan02_mask'][()]
 
-    ts_name = 'TS13'
+    ts_name = 'TS02'
+    #### tappan 04, 06, and tapp 17 has several begining frames in time series black or small partial area in the images
 
     # get RGB image
     # ts_arr = ts_arr[:,1:4,:,:]
@@ -298,8 +299,8 @@ def main():
 
     padding_size = 8
 
-    print(f'data dict tappan01 ts shape: {ts_arr.shape}')
-    print(f'data dict tappan01 mask shape: {mask_arr.shape}')
+    print(f'data dict {ts_name} ts shape: {ts_arr.shape}')
+    print(f'data dict {ts_name} mask shape: {mask_arr.shape}')
 
     train_ts_set = []
     train_mask_set = []
@@ -320,7 +321,8 @@ def main():
         temp_mask_set.append(mask)
 
     train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
+    # train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
+    train_ts_set = train_ts_set[:,-total_ts_len:] # for time series TS04 and TS17
     train_mask_set = np.stack(temp_mask_set, axis=0)
 
     print(f"train ts set shape: {train_ts_set.shape}")
