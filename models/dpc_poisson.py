@@ -298,7 +298,7 @@ def main():
     # ts_arr = ts_arr[:,::-1,:,:]
 
     ## get different chips in the Tappan Square for multiple time series
-    iteration = 3 # I
+    iteration = 10 # I
 
     temp_ts_set = []
     temp_mask_set = []
@@ -598,44 +598,45 @@ def predict_segment(data_loader, segment_model, optimizer):
 
 def poisson_segment(feature_arr, ts, label, input_size = 64):
     '''
+    feature_arr: 4D tensor TxFxHxW
     '''
     #build dataset
     print(f'ts shape: {ts.shape}')
-    # X = feature_arr.mean(axis=0)
+    X = feature_arr.mean(axis=0) # (FxHxW)
     # X = ts.mean(axis=0)
-    X = feature_arr
+    # X = feature_arr[5]
 
     label_old = label
 
     label = label.reshape((label.shape[0]*label.shape[1]))
+    X = np.transpose(X,(1,2,0))
 
-    train_ind = gl.trainsets.generate(label, rate=4)
+    rate_train_per_class = 0.6
+    train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
     train_labels = label[train_ind]
 
-    print(f'train ind {train_ind.shape}')
-    print(f'train labels {train_labels.shape}')
-
-    # X = X.reshape((X.shape[1]*X.shape[2],X.shape[0]))
-    X = X.reshape((X.shape[2]*X.shape[3],X.shape[0]*X.shape[1]))
-    # X = X.reshape((X.shape[0],X.shape[1]))
+    X = X.reshape((X.shape[0]*X.shape[1],X.shape[2])) # (4096x128)
     
     print(f'X shape {X.shape}')
     print(f'label shape {label.shape}')
-    # gl.datasets.save(X,label,'hls-timeseries',overwrite=True)
+    gl.datasets.save(X,label,'hls-timeseries',overwrite=True)
 
     #Build a knn graph
     k = 1000
     W = gl.weightmatrix.knn(X, k=k)
-    # num_train_per_class = 3
+    
     #Run Poisson learning
-    # model = gl.ssl.poisson(W, solver='gradient_descent')
-    model = gl.ssl.poisson(W)
+    # model = gl.ssl.poisson(W)
+    class_priors = gl.utils.class_priors(label)
+    model = gl.ssl.poisson(W, class_priors, solver='gradient_descent')
     pred_label = model.fit_predict(train_ind, train_labels)
 
     accuracy = gl.ssl.ssl_accuracy(pred_label, label, len(train_ind))   
     print("Accuracy: %.2f%%"%accuracy)
     
     segmented_image = pred_label.reshape((input_size,input_size))
+
+    # segmented_image = pred_label
 
     return segmented_image, ts, label_old
 
