@@ -38,7 +38,7 @@ parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=150, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -366,7 +366,6 @@ def main():
 
     padding_size = 8
     
-
     # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
 
