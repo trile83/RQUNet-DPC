@@ -165,10 +165,6 @@ def get_chunks(windows, num_seq):
                 print(f"i {i}")
             all_arr[j,i-num_seq] = array
 
-        # for i in range(L1-num_seq): # same results
-        #     array = windows[j,i:i+num_seq,:,:,:,:] # N, SL, C, H, W
-        #     all_arr[j,i] = array
-
     return all_arr
 
 def reverse_chunks(chunks, num_seq):
@@ -360,7 +356,6 @@ def main():
                     freeze=True)
 
     unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
-    # unet_segment = UNet3D(in_channel=5, n_classes=2)
 
     # model = nn.DataParallel(model)
 
@@ -381,8 +376,6 @@ def main():
     ### optimizer ###
     params = model.parameters()
     optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
-
-    segment_optimizer = optim.Adam(unet_segment.parameters(), lr=0.0001, weight_decay=0.000)
     args.old_lr = None
 
     ### restart training ###
@@ -417,21 +410,8 @@ def main():
     print("Start training process!")
 
     # setup tools
-    global de_normalize; de_normalize = denorm()
-    global img_path; img_path, model_path = set_path(args)
-    model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
-    global writer_train
-    try: # old version
-        writer_val = SummaryWriter(log_dir=os.path.join(img_path, 'val'))
-        writer_train = SummaryWriter(log_dir=os.path.join(img_path, 'train'))
-    except: # v1.7
-        writer_val = SummaryWriter(logdir=os.path.join(img_path, 'val'))
-        writer_train = SummaryWriter(logdir=os.path.join(img_path, 'train'))
     
     ### main loop ###
-    train_loss_lst = []
-    val_loss_lst = []
-
     print(f"length of dpc input training set {len(train_dl)}")
 
     all_feature_arr = []
@@ -461,10 +441,8 @@ def main():
         # print(f"feature arr shape: {feature_arr.shape}")
 
         all_feature_arr.append(feature_arr)
-        # all_mask_arr.append(mask_arr)
 
     all_feature_arr = torch.cat(all_feature_arr, dim=0)
-    # all_mask_arr = torch.cat(all_mask_arr, dim=0)
 
     print(f"all feature arr shape: {all_feature_arr.shape}")
 
@@ -476,20 +454,9 @@ def main():
     # print(f"train mask set shape: {train_mask_set.shape}")
 
     print("Finished with DPC training")
-
-    # train_seg_set = segmentDataset(all_feature_arr,  train_mask_set)
-    # loader_args_1 = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
-    # train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
-
-    # print(f"Length of segmentation input training set {len(train_segment_dl)}")
     print("Start Poisson segmentation!")
 
-    # best_acc = 0
-    # min_loss = np.inf
-
     y_preds = []
-
-    # train_ind, train_labels = sampling_poisson(all_feature_arr,  train_mask_set)
 
     for i in range(all_feature_arr.shape[0]):
 
@@ -529,16 +496,12 @@ def process_output(mask):
     return target, (B, B2, NS, NP, SQ)
 
 def train_dpc(data_loader, dpc_model, segment_model, optimizer, epoch, num_seq, seq_length):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
+
     dpc_model.train()
-    #segment_model.train()
     global iteration
 
     image_lst = []
     feature_lst = []
-    mask_lst = []
 
     for idx, input in enumerate(data_loader):
 
@@ -559,15 +522,9 @@ def train_dpc(data_loader, dpc_model, segment_model, optimizer, epoch, num_seq, 
 
         image_lst.append(input_seq)
         feature_lst.append(features)
-        # mask_lst.append(input_mask)
 
-        # break
-
-    # image_arr = torch.cat(image_lst, dim=0)
     feature_arr = torch.cat(feature_lst, dim=0)
-    # mask_arr = torch.cat(mask_lst, dim=0)
 
-    # return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
     return feature_arr.cpu().detach()
 
 
@@ -601,8 +558,9 @@ def poisson_segment(feature_arr, ts, label, input_size = 64):
     feature_arr: 4D tensor TxFxHxW
     '''
     #build dataset
-    print(f'ts shape: {ts.shape}')
+    # print(f'ts shape: {ts.shape}')
     X = feature_arr.mean(axis=0) # (FxHxW)
+
     # X = ts.mean(axis=0)
     # X = feature_arr[5]
 
@@ -610,15 +568,14 @@ def poisson_segment(feature_arr, ts, label, input_size = 64):
 
     label = label.reshape((label.shape[0]*label.shape[1]))
     X = np.transpose(X,(1,2,0))
+    X = X.reshape((X.shape[0]*X.shape[1],X.shape[2])) # (4096x128)
 
-    rate_train_per_class = 0.6
+    rate_train_per_class = 0.2
     train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
     train_labels = label[train_ind]
 
-    X = X.reshape((X.shape[0]*X.shape[1],X.shape[2])) # (4096x128)
-    
-    print(f'X shape {X.shape}')
-    print(f'label shape {label.shape}')
+    # print(f'X shape {X.shape}')
+    # print(f'label shape {label.shape}')
     gl.datasets.save(X,label,'hls-timeseries',overwrite=True)
 
     #Build a knn graph
@@ -626,7 +583,6 @@ def poisson_segment(feature_arr, ts, label, input_size = 64):
     W = gl.weightmatrix.knn(X, k=k)
     
     #Run Poisson learning
-    # model = gl.ssl.poisson(W)
     class_priors = gl.utils.class_priors(label)
     model = gl.ssl.poisson(W, class_priors, solver='gradient_descent')
     pred_label = model.fit_predict(train_ind, train_labels)
@@ -636,28 +592,8 @@ def poisson_segment(feature_arr, ts, label, input_size = 64):
     
     segmented_image = pred_label.reshape((input_size,input_size))
 
-    # segmented_image = pred_label
-
     return segmented_image, ts, label_old
 
 
-def set_path(args):
-    if args.resume: exp_path = os.path.dirname(os.path.dirname(args.resume))
-    else:
-        exp_path = 'log_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
-bs{args.batch_size}_lr{1}_seq{args.num_seq}_pred{args.pred_step}_len{args.seq_len}_ds{args.ds}_\
-train-{args.train_what}{2}'.format(
-                    'r%s' % args.net[6::], \
-                    args.old_lr if args.old_lr is not None else args.lr, \
-                    '_pt=%s' % args.pretrain.replace('/','-') if args.pretrain else '', \
-                    args=args)
-    img_path = os.path.join(exp_path, 'img')
-    model_path = os.path.join(exp_path, 'model')
-    if not os.path.exists(img_path): os.makedirs(img_path)
-    if not os.path.exists(model_path): os.makedirs(model_path)
-    return img_path, model_path
-
 if __name__ == '__main__':
     main()
-
-    # python main.py --gpu 0 --net resnet18 --dataset ucf101 --batch_size 128 --img_dim 128 --epochs 100
