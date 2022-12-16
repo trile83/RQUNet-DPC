@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from skimage import exposure
 from einops import rearrange
 import os
+import csv
 import glob
 from dpc.model_3d import *
 from dpc.model_3d_unet import *
@@ -22,6 +23,7 @@ import logging
 import graphlearning as gl
 import rioxarray as rxr
 from tensorboardX import SummaryWriter
+from sklearn.metrics import balanced_accuracy_score, jaccard_score, classification_report
 
 torch.backends.cudnn.benchmark = True
 
@@ -224,6 +226,23 @@ def chipper(ts_stack, mask, input_size=32):
 
     return out_ts, out_mask
 
+def specific_chipper(ts_stack, mask, h_index, w_index, input_size=32):
+    '''
+    stack: input time-series stack to be chipped (TxCxHxW)
+    mask: ground truth that need to be chipped (HxW)
+    input_size: desire output size
+    ** return: output stack with chipped size
+    '''
+    t, c, h, w = ts_stack.shape
+
+    i = h_index
+    j = w_index
+    
+    out_ts = np.array([ts_stack[:, :, i:(i+input_size), j:(j+input_size)]])
+    out_mask = np.array([mask[i:(i+input_size), j:(j+input_size)]])
+
+    return out_ts, out_mask
+
 def padding_ts(ts, mask, padding_size=10):
     '''
     Args:
@@ -259,9 +278,24 @@ def padding_ts(ts, mask, padding_size=10):
     return padded_ts, padded_mask
 
 
+def get_accuracy(y_pred, y_true):
+
+    target_names = ['non-crop','cropland']
+
+    y_true = y_true.flatten()
+    y_pred = y_pred.flatten()
+
+    # get overall weighted accuracy
+    accuracy = balanced_accuracy_score(y_true, y_pred, sample_weight=None)
+    report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True)
+    precision = report['cropland']['precision']
+    recall = report['cropland']['recall']
+    f1_score = report['cropland']['f1-score']
+    return accuracy, precision, recall, f1_score
+
 def main():
-    torch.manual_seed(0)
-    np.random.seed(0)
+    torch.manual_seed(42)
+    np.random.seed(42)
     global args; args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
     global cuda; cuda = torch.device('cuda')
@@ -281,7 +315,7 @@ def main():
     input_size = 64 ## 64
     total_ts_len = 10 # L
 
-    padding_size = 8
+    padding_size = 0
     
     # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
@@ -295,15 +329,17 @@ def main():
 
     ## get different chips in the Tappan Square for multiple time series
     iteration = 10 # I
+    h_list =[10,20,30,40,50,70,80,90,100,110]
+    w_list =[15,25,35,45,55,75,85,95,105,115]
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(iteration):
-        ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
+    for i in range(len(h_list)):
+        ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
-        # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+        ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
         temp_ts_set.append(ts)
         temp_mask_set.append(mask)
@@ -464,25 +500,36 @@ def main():
         y_preds.append((y_pred, x ,y_true))
 
     data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
-    for idx, (y_pred, x, y) in enumerate(y_preds):
-        plt.figure(figsize=(20,20))
-        plt.subplot(1,3,1)
-        plt.title("Image")
-        image = np.transpose(x[5,1:4,:,:], (1,2,0))
-        # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-        plt.imshow(rescale_truncate(image))
-        plt.subplot(1,3,2)
-        plt.title("Segmentation Label")
-        image = np.transpose(y[:,:], (0,1))
-        plt.imshow(image)
-    
-        plt.subplot(1,3,3)
-        plt.title(f"Segmentation Pred")
-        image = np.transpose(y_pred[:,:], (0,1))
-        plt.imshow(image)
-        plt.savefig(f"{str(data_dir)}{ts_name}_{str(idx)}.png")
 
-        plt.close()
+    with open(f'{data_dir}{ts_name}_poisson_stat_results.csv','w') as f1:
+        writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
+        writer.writerow(['id','accuracy','precision','recall','f1-score'])
+        for idx in range(all_feature_arr.shape[0]):
+        # for idx, (y_pred, x, y) in enumerate(y_preds):
+            (y_pred, x ,y_true) = poisson_segment(all_feature_arr[idx], train_ts_set[idx], train_mask_set[idx])
+
+            accuracy, precision, recall, f1_score = get_accuracy(y_pred, y_true)
+
+            writer.writerow([idx, accuracy, precision, recall, f1_score])
+
+            plt.figure(figsize=(20,20))
+            # plt.subplot(1,3,1)
+            # plt.title("Image")
+            # image = np.transpose(x[5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
+            # # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+            # plt.imshow(rescale_truncate(image))
+            # plt.subplot(1,3,2)
+            # plt.title("Segmentation Label")
+            # image = np.transpose(y[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+            # plt.imshow(image)
+        
+            # plt.subplot(1,3,3)
+            # plt.title(f"Segmentation Pred")
+            image = np.transpose(y_pred[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+            plt.imshow(image)
+            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-poisson.png")
+
+            plt.close()
 
     print('Poisson Semi Supervised Finished')
 
@@ -528,31 +575,6 @@ def train_dpc(data_loader, dpc_model, segment_model, optimizer, epoch, num_seq, 
     return feature_arr.cpu().detach()
 
 
-def predict_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.eval()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['x'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,F,H,W) = features.shape
-        batch = 1
-
-        # features = features.view(B*N,SL,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        mask_pred, _ = segment_model(features)
-
-    return mask_pred
-
-
 def poisson_segment(feature_arr, ts, label, input_size = 64):
     '''
     feature_arr: 4D tensor TxFxHxW
@@ -570,7 +592,7 @@ def poisson_segment(feature_arr, ts, label, input_size = 64):
     X = np.transpose(X,(1,2,0))
     X = X.reshape((X.shape[0]*X.shape[1],X.shape[2])) # (4096x128)
 
-    rate_train_per_class = 0.2
+    rate_train_per_class = 0.5
     train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
     train_labels = label[train_ind]
 
