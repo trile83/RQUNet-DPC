@@ -228,6 +228,24 @@ def chipper(ts_stack, mask, input_size=32):
 
     return out_ts, out_mask
 
+def specific_chipper(ts_stack, mask, h_index, w_index, input_size=32):
+    '''
+    stack: input time-series stack to be chipped (TxCxHxW)
+    mask: ground truth that need to be chipped (HxW)
+    input_size: desire output size
+    ** return: output stack with chipped size
+    '''
+    t, c, h, w = ts_stack.shape
+
+    i = h_index
+    j = w_index
+    
+    out_ts = np.array([ts_stack[:, :, i:(i+input_size), j:(j+input_size)]])
+    out_mask = np.array([mask[i:(i+input_size), j:(j+input_size)]])
+
+    return out_ts, out_mask
+
+
 def padding_ts(ts, mask, padding_size=10):
     '''
     Args:
@@ -271,12 +289,13 @@ def main():
     global cuda; cuda = torch.device('cuda')
 
     # prepare data
+    ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/old/hls_data.hdf5"
-    with h5py.File(filename, "r") as f:
-        # print("Keys: %s" % f.keys())
-        ts_arr = f['Tappan01_ts'][()]
-        mask_arr = f['Tappan01_mask'][()]
+    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    with h5py.File(filename, "r") as file:
+        # print("Keys: %s" % file.keys())
+        ts_arr = file['Tappan01_PEV_ts'][()]
+        mask_arr = file['Tappan01_mask'][()]
 
     seq_length = 6
     num_seq = 4
@@ -285,7 +304,6 @@ def main():
 
     padding_size = 8
     
-
     # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
 
@@ -297,12 +315,18 @@ def main():
     # ts_arr = ts_arr[:,::-1,:,:]
 
     ## get different chips in the Tappan Square for multiple time series
-    iteration = 5 # I
+    iteration = 10 # I
+    h_list =[10,20,30,40,50,70,80,90,100,110]
+    w_list =[15,25,35,45,55,75,85,95,105,115]
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(iteration):
-        ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
+    for i in range(len(h_list)):
+        ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
+    # temp_ts_set = []
+    # temp_mask_set = []
+    # for i in range(iteration):
+    #     ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
@@ -509,7 +533,7 @@ def main():
                             'state_dict': model.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'dpc_pad_13band_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, 'dpc_control_13band_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             # save unet segment weights
             save_checkpoint({'epoch': epoch+1,
@@ -517,7 +541,7 @@ def main():
                             'state_dict': unet_segment.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'unetsegment_pad_13band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, 'unetsegment_control_13band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
 
     plt.plot(train_loss_lst, color ="blue")
     plt.plot(val_loss_lst, color = "red")
