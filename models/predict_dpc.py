@@ -224,6 +224,24 @@ def chipper(ts_stack, mask, input_size=32):
     return out_ts, out_mask
 
 
+def specific_chipper(ts_stack, mask, h_index, w_index, input_size=32):
+    '''
+    stack: input time-series stack to be chipped (TxCxHxW)
+    mask: ground truth that need to be chipped (HxW)
+    input_size: desire output size
+    ** return: output stack with chipped size
+    '''
+    t, c, h, w = ts_stack.shape
+
+    i = h_index
+    j = w_index
+    
+    out_ts = np.array([ts_stack[:, :, i:(i+input_size), j:(j+input_size)]])
+    out_mask = np.array([mask[i:(i+input_size), j:(j+input_size)]])
+
+    return out_ts, out_mask
+
+
 def get_accuracy(y_pred, y_true):
 
     target_names = ['non-crop','cropland']
@@ -271,21 +289,21 @@ def padding_ts(ts, mask, padding_size=10):
 
 
 def main():
-    torch.manual_seed(0)
-    np.random.seed(0)
+    torch.manual_seed(42)
+    np.random.seed(42)
     global args; args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
     global cuda; cuda = torch.device('cuda')
 
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/old/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
     with h5py.File(filename, "r") as file:
-        # print("Keys: %s" % f.keys())
-        ts_arr = file['Tappan02_ts'][()]
-        mask_arr = file['Tappan02_mask'][()]
+        # print("Keys: %s" % file.keys())
+        ts_arr = file['Tappan01_PEV_ts'][()]
+        mask_arr = file['Tappan01_mask'][()]
 
-    ts_name = 'TS02'
+    ts_name = 'TS01'
     #### tappan 04, 06, and tapp 17 has several begining frames in time series black or small partial area in the images
 
     # get RGB image
@@ -294,10 +312,10 @@ def main():
 
     seq_length = 5
     num_seq = 4
-    input_size = 48
+    input_size = 64
     total_ts_len = 10 # L
 
-    padding_size = 8
+    padding_size = 0
 
     print(f'data dict {ts_name} ts shape: {ts_arr.shape}')
     print(f'data dict {ts_name} mask shape: {mask_arr.shape}')
@@ -306,12 +324,14 @@ def main():
     train_mask_set = []
 
     ## get different chips in the Tappan Square for multiple time series
-    iteration = 20
+    iteration = 10
+    h_list =[10,20,30,40,50,70,80,90,100,110]
+    w_list =[15,25,35,45,55,75,85,95,105,115]
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(iteration):
-        ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
+    for i in range(len(h_list)):
+        ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
@@ -373,8 +393,8 @@ def main():
     # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_epoch222.pth'
 
     ### 13 bands
-    dpc_checkpoint = f'{str(model_dir)}dpc_13band_epoch158.pth'
-    unetsegment_checkpoint = f'{str(model_dir)}unetsegment_13band_epoch_158.pth'
+    dpc_checkpoint = f'{str(model_dir)}dpc_control_13band_epoch103.pth'
+    unetsegment_checkpoint = f'{str(model_dir)}unetsegment_control_13band_epoch_103.pth'
 
     ### 13 band padded
     # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'
@@ -493,17 +513,33 @@ def main():
 
             (B,L,F,H,W) = x.shape
 
-            x_ori = x
-
             x = x.view(B*L,F,H,W)
             batch_size = 1
 
             x_mean = x.mean(dim=0)
             x_mean = x_mean.view(batch_size,F,H,W)
 
+            # print(f'x mean min value: {torch.min(x_mean)}')
+            # print(f'x mean max value: {torch.max(x_mean)}')
+
+            # ## predict first frame
+            # x_0 = x[0]
+            # x_0 = x_0.view(batch_size,F,H,W)
+
+            # print(f'x 0 min value: {torch.min(x_0)}')
+            # print(f'x 0 max value: {torch.max(x_0)}')
+
+            # ## predict 6th frame
+            # x_5 = x[5]
+            # x_5 = x_5.view(batch_size,F,H,W)
+
+            # print(f'x 5 min value: {torch.min(x_5)}')
+            # print(f'x 5 max value: {torch.max(x_5)}')
+
             # predict mean of time series
             output = unet_segment(x_mean)
-            # print(f"output shape: {output[0].shape}")
+            # output = unet_segment(x_5)
+
             y_pred = output[0]
 
             index_array = torch.argmax(y_pred, dim=1)
@@ -514,21 +550,23 @@ def main():
             writer.writerow([idx, accuracy, precision, recall, f1_score])
 
             plt.figure(figsize=(20,20))
-            plt.subplot(1,3,1)
+            # plt.subplot(1,3,1)
             plt.title("Image")
             image = np.transpose(z[0,5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             plt.imshow(rescale_truncate(image))
-            plt.subplot(1,3,2)
+            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
+            # plt.subplot(1,3,2)
             plt.title("Segmentation Label")
-            image = np.transpose(batch['mask'].numpy()[0,padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+            image = np.transpose(y[0,padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
             plt.imshow(image)
+            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
         
-            plt.subplot(1,3,3)
+            # plt.subplot(1,3,3)
             plt.title(f"Segmentation w accuracy {accuracy}")
             image = np.transpose(index_array[0,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (0,1))
             plt.imshow(image)
-            plt.savefig(f"{str(data_dir)}{ts_name}_{str(idx)}.png")
+            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-unet.png")
 
             plt.close()
 
