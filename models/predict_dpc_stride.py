@@ -277,7 +277,7 @@ def stride_over_channels(x):
 
     model = nn.Sequential(
         nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1),
-        nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1),
+        nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1)
     )
 
     model.float()
@@ -289,7 +289,7 @@ def stride_over_channels(x):
 
 def main():
     torch.manual_seed(0)
-    np.random.seed(123)
+    np.random.seed(42)
     global args; args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
     global cuda; cuda = torch.device('cuda')
@@ -417,14 +417,6 @@ def main():
         criterion = models.losses.MultiTemporalDiceLoss()
 
     ### optimizer ###
-    params = model.parameters()
-    optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.000)
-
-    segment_optimizer = optim.Adam(unet_segment.parameters(), lr=0.0001, weight_decay=0.000)
-    args.old_lr = None
-
-    best_acc = 0
-    min_loss = np.inf
 
     ### restart training ###
     ### load data ###
@@ -510,8 +502,6 @@ def main():
             # print(f"y shape: {y.shape}")
 
             (B,L,F,H,W) = x.shape
-
-            x_ori = x
 
             x = x.view(B*L,F,H,W)
             batch_size = 1
