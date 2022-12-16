@@ -356,8 +356,8 @@ def main():
     filename = "/home/geoint/tri/hls_ts_video/old/hls_data.hdf5"
     with h5py.File(filename, "r") as f:
         # print("Keys: %s" % f.keys())
-        ts_arr = f['Tappan01_ts'][()]
-        mask_arr = f['Tappan01_mask'][()]
+        ts_arr = f['Tappan02_ts'][()]
+        mask_arr = f['Tappan02_mask'][()]
 
     seq_length = 6
     num_seq = 4
