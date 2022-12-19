@@ -3,8 +3,9 @@
 import numpy as np
 import tqdm.auto as tqdm
 import math
-import tensorflow as tf
-from ..utils.data import standardize_image
+# import tensorflow as tf
+from torch.utils import data
+from .data import standardize_image
 
 
 OVERLAP_FACTOR = 1
@@ -96,9 +97,9 @@ class MightyMosaic(np.ndarray):
         array = super().__new__(cls, mosaic_shape, float, None, 0, None, None)
         # array = np.zeros(mosaic_shape)
 
-        options = tf.data.Options()
-        options.experimental_distribute.auto_shard_policy = \
-            tf.data.experimental.AutoShardPolicy.OFF
+        # options = tf.data.Options()
+        # options.experimental_distribute.auto_shard_policy = \
+        #     tf.data.experimental.AutoShardPolicy.OFF
 
         array.mosaic_margins = mosaic_margins
         array.tile_margins = tile_margins
@@ -107,7 +108,7 @@ class MightyMosaic(np.ndarray):
         array.fill_mode = fill_mode
         array.cval = cval
         array.original_shape = shape
-        array.options = options
+        # array.options = options
         return array
 
     def find_best_divisor(self, size, low, high, step=1):
@@ -187,9 +188,12 @@ class MightyMosaic(np.ndarray):
                     batch[item, :, :, :] = standardize_image(
                         batch[item, :, :, :], standardization, mean, std)
 
-            batch = tf.data.Dataset.from_tensor_slices(
+            # batch = tf.data.Dataset.from_tensor_slices(
+            #     np.expand_dims(batch, axis=0))
+
+            batch = data.TensorDataset(
                 np.expand_dims(batch, axis=0))
-            batch = batch.with_options(self.options)
+            # batch = batch.with_options(self.options)
             batch = function(batch, batch_size=batch_size)
 
             # batch = np.moveaxis(batch, -1, 1)
