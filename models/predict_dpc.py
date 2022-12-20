@@ -300,10 +300,10 @@ def main():
     filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan01_PEV_ts'][()]
-        mask_arr = file['Tappan01_mask'][()]
+        ts_arr = file['Tappan02_PEV_ts'][()]
+        mask_arr = file['Tappan02_mask'][()]
 
-    ts_name = 'TS01'
+    ts_name = 'TS02'
     #### tappan 04, 06, and tapp 17 has several begining frames in time series black or small partial area in the images
 
     # get RGB image
