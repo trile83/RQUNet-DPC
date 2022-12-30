@@ -393,8 +393,8 @@ def main():
     # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_epoch222.pth'
 
     ### 13 bands
-    dpc_checkpoint = f'{str(model_dir)}dpc_control_13band_epoch103.pth'
-    unetsegment_checkpoint = f'{str(model_dir)}unetsegment_control_13band_epoch_103.pth'
+    dpc_checkpoint = f'{str(model_dir)}dpc_control_13band_epoch199.pth'
+    unetsegment_checkpoint = f'{str(model_dir)}unetsegment_control_13band_epoch_199.pth'
 
     ### 13 band padded
     # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'
@@ -523,8 +523,8 @@ def main():
             # print(f'x mean max value: {torch.max(x_mean)}')
 
             # ## predict first frame
-            # x_0 = x[0]
-            # x_0 = x_0.view(batch_size,F,H,W)
+            x_0 = x[0]
+            x_0 = x_0.view(batch_size,F,H,W)
 
             # print(f'x 0 min value: {torch.min(x_0)}')
             # print(f'x 0 max value: {torch.max(x_0)}')
@@ -537,7 +537,8 @@ def main():
             # print(f'x 5 max value: {torch.max(x_5)}')
 
             # predict mean of time series
-            output = unet_segment(x_mean)
+            # output = unet_segment(x_mean)
+            output = unet_segment(x_0)
             # output = unet_segment(x_5)
 
             y_pred = output[0]
@@ -552,7 +553,7 @@ def main():
             plt.figure(figsize=(20,20))
             # plt.subplot(1,3,1)
             plt.title("Image")
-            image = np.transpose(z[0,5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
+            image = np.transpose(z[0,0,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             plt.imshow(rescale_truncate(image))
             plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
