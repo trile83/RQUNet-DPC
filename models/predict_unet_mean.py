@@ -361,7 +361,7 @@ def main():
     # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_epoch222.pth'
 
     ### 13 bands
-    unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_control_13band_epoch_182.pth'
+    unetsegment_checkpoint = f'{str(model_dir)}unet_eachframe_control_13band_epoch_176.pth'
 
     ### 13 band padded
     # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'
@@ -438,9 +438,9 @@ def main():
             # print(f'x mean min value: {torch.min(x_mean)}')
             # print(f'x mean max value: {torch.max(x_mean)}')
 
-            # ## predict first frame
-            # x_0 = x[0]
-            # x_0 = x_0.view(batch_size,F,H,W)
+            ## predict first frame
+            x_0 = x[0]
+            x_0 = x_0.view(batch_size,F,H,W)
 
             # print(f'x 0 min value: {torch.min(x_0)}')
             # print(f'x 0 max value: {torch.max(x_0)}')
@@ -453,22 +453,22 @@ def main():
             # print(f'x 5 max value: {torch.max(x_5)}')
 
             # predict mean of time series
-            output = unet_segment(x_mean)
-            # output = unet_segment(x_5)
+            # output = unet_segment(x_mean)
+            output = unet_segment(x_0)
 
             y_pred = output[0]
 
             index_array = torch.argmax(y_pred, dim=1)
-            # print(f"index array shape: {index_array.shape}")
+            print(f"index array shape: {index_array.shape}")
 
-            accuracy, precision, recall, f1_score = get_accuracy(index_array.cpu().numpy(), y)
+            accuracy, precision, recall, f1_score = get_accuracy(index_array.cpu().numpy()[0], y)
 
             writer.writerow([idx, accuracy, precision, recall, f1_score])
 
             plt.figure(figsize=(20,20))
             # plt.subplot(1,3,1)
             plt.title("Image")
-            image = np.transpose(x_ori[0,5,1:4,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (1,2,0))
+            image = np.transpose(x_ori[0,0,1:4,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (1,2,0))
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             plt.imshow(rescale_truncate(image))
             plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
