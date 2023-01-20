@@ -38,7 +38,7 @@ parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=150, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -161,8 +161,8 @@ def get_chunks(windows, num_seq):
     for j in range(I):
         for i in range(num_seq, L1+1):
             array = windows[j,i-num_seq:i,:,:,:,:] # N, SL, C, H, W
-            if not array.any():
-                print(f"i {i}")
+            # if not array.any():
+            #     print(f"i {i}")
             all_arr[j,i-num_seq] = array
 
         # for i in range(L1-num_seq): # same results
@@ -276,14 +276,23 @@ def stride_over_channels(x):
     # out2 = c2(out1)         # batch-size x 1 x channels x height x width
     # out3 = out2.squeeze(1)  # batch-size x channels x height x width
 
-    model = nn.Sequential(
-        nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1),
-        nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1),
-    )
+    c1 = nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1)
+    c2 = nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1)
 
-    model.float()
+    # model = nn.Sequential(
+    #     nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1),
+    #     nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1),
+    #     # nn.Conv3d(in_channels=10, out_channels=1, kernel_size=3, padding=1),
+    # )
 
-    out = model(x.float())
+    # model.float()
+    # out = model(x.float())
+
+    out1 = c1(x.float())            # batch-size x 4 x channels x height x width
+    out2 = c2(out1)         # batch-size x 1 x channels x height x width
+    out3 = out2.squeeze(1)
+
+    out = out3
 
     return out
 
@@ -694,10 +703,12 @@ def train_segment(data_loader, segment_model, optimizer):
         features = y1.to(cuda, dtype=torch.float32)
         input_mask = input['mask'].to(cuda, dtype=torch.long)
 
-        (B,L,F,H,W) = features.shape
+        # print(f'features shape: {features.shape}')
+
+        (B,F,H,W) = features.shape
         batch = 1
 
-        features = features.view(B*L,F,H,W)
+        # features = features.view(B*L,F,H,W)
         # features = features.mean(dim=0)
         # features = features.view(batch,F,H,W)
         input_mask = input_mask.view(batch,H,W)
@@ -745,10 +756,10 @@ def val_segment(data_loader, segment_model, optimizer):
             features = y1.to(cuda, dtype=torch.float32)
             input_mask = input['mask'].to(cuda, dtype=torch.long)
 
-            (B,L,F,H,W) = features.shape
+            (B,F,H,W) = features.shape
             batch = 1
 
-            features = features.view(B*L,F,H,W)
+            # features = features.view(B*L,F,H,W)
             # features = features.mean(dim=0)
             # features = features.view(batch,F,H,W)
             input_mask = input_mask.view(batch,H,W)

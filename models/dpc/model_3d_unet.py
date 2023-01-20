@@ -12,6 +12,7 @@ from backbone.select_backbone import select_resnet
 from backbone.convrnn import ConvGRU
 from unet.unet_vae import UNet_VAE_old
 from unet.unet_vae_RQ_scheme1_encoder import UNet_VAE_RQ_scheme1_encoder
+from unet.unet_test import UNet_test
 
 
 class DPC_RNN_UNet(nn.Module):
@@ -26,6 +27,7 @@ class DPC_RNN_UNet(nn.Module):
         self.pred_step = pred_step
         self.last_duration = int(math.ceil(seq_len / 4))
         self.last_size = int(math.ceil(sample_size / 32))
+        self.network = network
         # print('final feature map has size %dx%d' % (self.last_size, self.last_size))
 
         _, self.param = select_resnet('resnet18', track_running_stats=False)
@@ -34,6 +36,8 @@ class DPC_RNN_UNet(nn.Module):
             self.param['feature_size'] = 960
             if network == "unet-vae":
                 self.backbone = UNet_VAE_old(num_classes=13,segment=False,in_channels=13,depth=5,is_encoder=True)
+            elif network == 'unet':
+                self.backbone = UNet_test(num_class=13, in_channels=13)
             else:
                 self.backbone = UNet_VAE_RQ_scheme1_encoder(num_classes=3,segment=False,in_channels=3,depth=5,is_encoder=True,alpha = 0.9)
 
@@ -84,49 +88,75 @@ class DPC_RNN_UNet(nn.Module):
         ### extract feature ###
         # print(f'block shape: {block.shape}')
         (B, N, SL, C, H, W) = block.shape
-        # block = block.view(B*N, C, SL, H, W)
+        if self.network == 'unet-vae':
+            block = rearrange(block, "b n sl c h w -> (b n sl) c h w")
+            ### encoder
+            feature = self.backbone(block)
+            # _, feature = self.backbone(block)
 
-        block = rearrange(block, "b n sl c h w -> (b n sl) c h w")
+            del block
 
-        ### encoder
-        feature = self.backbone(block)
-        # _, feature = self.backbone(block)
+            feature = self.relu(feature) # [0, +inf)
+            feature = torch.reshape(feature, (B,N,SL,feature.shape[1],feature.shape[2],feature.shape[3]))
+            
+            ### aggregate, predict future ###
 
-        del block
+            # feats = feature[:, 0:N-self.pred_step, :].contiguous()
+            feats = rearrange(feature, "b n sl c h w -> (b n) sl c h w")
+
+            # feats = feature[:, 0:N-self.pred_step, :].contiguous() # need to reshape
+            # print(f'feats shape: {feats.shape}')
+
+            c_t, hidden = self.agg(feats)
+            
+            hidden = hidden[:,-1,:] # after tanh, (-1,1). get the hidden state of last layer, last time step
+
+            c_t = rearrange(c_t, "(b n) sl c h w -> b n sl c h w", n=N)
+
+        else:
+            block = block.view(B*N, C, SL, H, W)
+            feature = self.backbone(block)
+            del block
+            feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
+
+            feature_inf_all = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size) # before ReLU, (-inf, +inf)
+            feature = self.relu(feature) # [0, +inf)
+            feature = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size) # [B,N,D,6,6], [0, +inf)
+
+            print(f'feature shape: {feature.shape}')
+            feature_inf = feature_inf_all[:, N-self.pred_step::, :].contiguous()
+            del feature_inf_all
+
+            ### aggregate, predict future ###
+            _, hidden = self.agg(feature[:, 0:N-self.pred_step, :].contiguous())
+            hidden = hidden[:,-1,:] # after tanh, (-1,1). get the hidden state of last layer, last time step
+            
+            pred = []
+            for i in range(self.pred_step):
+                # sequentially pred future
+                p_tmp = self.network_pred(hidden)
+                print(f'p_tmp shape :{p_tmp.shape}')
+                pred.append(p_tmp)
+                _, hidden = self.agg(self.relu(p_tmp).unsqueeze(1), hidden.unsqueeze(0))
+                hidden = hidden[:,-1,:]
+            pred = torch.stack(pred, 1) # B, pred_step, xxx
+            del hidden
+
+
+            
 
         # print(f'feature shape: {feature.shape}')
 
-        # feature_inf_all = torch.reshape(feature, (B,N,SL,C,feature.shape[2],feature.shape[3]))
-
-        feature = self.relu(feature) # [0, +inf)
-
-        # print(f'feature after relu shape: {feature.shape}')
-
-        feature = torch.reshape(feature, (B,N,SL,feature.shape[1],feature.shape[2],feature.shape[3]))
-
-        # feature_inf = feature_inf_all[:, N-self.pred_step::, :].contiguous()
-
-        # print(f'feature_inf_all shape: {feature_inf_all.shape}')
-        # del feature_inf_all
-
+        # feature = self.relu(feature) # [0, +inf)
+        # feature = torch.reshape(feature, (B,N,SL,feature.shape[1],feature.shape[2],feature.shape[3]))
         
-        ### aggregate, predict future ###
+        # ### aggregate, predict future ###
 
-        # feats = feature[:, 0:N-self.pred_step, :].contiguous()
-        feats = rearrange(feature, "b n sl c h w -> (b n) sl c h w")
+        # feats = rearrange(feature, "b n sl c h w -> (b n) sl c h w")
 
-        # feats = feature[:, 0:N-self.pred_step, :].contiguous() # need to reshape
-        # print(f'feats shape: {feats.shape}')
-
-        c_t, hidden = self.agg(feats)
+        # c_t, hidden = self.agg(feats)
         
-        hidden = hidden[:,-1,:] # after tanh, (-1,1). get the hidden state of last layer, last time step
-
-        # print(f'feature shape: {feature.shape}')
-        # print(f'feats shape: {feats.shape}')
-        # print(f'hidden shape: {hidden.shape}')
-        # print(f'c_t shape: {c_t.shape}')
-        # print(f'last hidden layer shape: {hidden.shape}')
+        # hidden = hidden[:,-1,:] # after tanh, (-1,1). get the hidden state of last layer, last time step
 
         # c_t = rearrange(c_t, "b t f h w -> (b t) f h w")
         
@@ -137,7 +167,7 @@ class DPC_RNN_UNet(nn.Module):
         #     # sequentially pred future
         #     p_tmp = self.network_pred(hidden)
         #     pred.append(p_tmp)
-        #     print(f'pred shape: {p_tmp.shape}')
+        #     print(f'p_tmp shape: {p_tmp.shape}')
         #     _, hidden = self.agg(self.relu(p_tmp).unsqueeze(1), hidden.unsqueeze(0))
         #     hidden = hidden[:,-1,:]
         # pred = torch.stack(pred, 1) # B, pred_step, xxx
@@ -168,8 +198,7 @@ class DPC_RNN_UNet(nn.Module):
         #     mask = tmp.view(B, self.last_size**2, self.pred_step, B, self.last_size**2, N).permute(0,2,1,3,5,4)
         #     self.mask = mask
 
-        c_t = rearrange(c_t, "(b n) sl c h w -> b n sl c h w", n=N)
-
+        
         return c_t
 
     def _initialize_weights(self, module):

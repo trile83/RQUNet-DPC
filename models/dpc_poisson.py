@@ -288,27 +288,20 @@ def get_accuracy(y_pred, y_true):
     # get overall weighted accuracy
     accuracy = balanced_accuracy_score(y_true, y_pred, sample_weight=None)
     report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True)
+    iou = jaccard_score(y_pred, y_true, average="micro")
     precision = report['cropland']['precision']
     recall = report['cropland']['recall']
     f1_score = report['cropland']['f1-score']
-    return accuracy, precision, recall, f1_score
+    return accuracy, precision, recall, f1_score, iou
 
-def main():
-    torch.manual_seed(42)
-    np.random.seed(42)
-    global args; args = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
-    global cuda; cuda = torch.device('cuda')
-
+def get_data(ts_name_key, iteration=1, specific=True):
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/old/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
     with h5py.File(filename, "r") as f:
         # print("Keys: %s" % f.keys())
-        ts_arr = f['Tappan01_ts'][()]
-        mask_arr = f['Tappan01_mask'][()]
-
-    ts_name = 'TS01'
+        ts_arr = f[ts_name_key+'_PEV_ts'][()]
+        mask_arr = f[ts_name_key+'_mask'][()]
 
     seq_length = 6
     num_seq = 4
@@ -316,9 +309,6 @@ def main():
     total_ts_len = 10 # L
 
     padding_size = 0
-    
-    # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
-    # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
 
     train_ts_set = []
     train_mask_set = []
@@ -328,21 +318,35 @@ def main():
     # ts_arr = ts_arr[:,::-1,:,:]
 
     ## get different chips in the Tappan Square for multiple time series
-    iteration = 10 # I
-    h_list =[10,20,30,40,50,70,80,90,100,110]
-    w_list =[15,25,35,45,55,75,85,95,105,115]
+    # iteration = 1 # I
+    # h_list =[10,20,30,40,50,70,80,90,100,110]
+    # w_list =[15,25,35,45,55,75,85,95,105,115]
+
+    h_list =[10]
+    w_list =[15]
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(len(h_list)):
-        ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
-        ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-        mask = mask.reshape((mask.shape[1],mask.shape[2]))
+    if specific:
+        for i in range(len(h_list)):
+            ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
+            ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+            mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
-        ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+            ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
-        temp_ts_set.append(ts)
-        temp_mask_set.append(mask)
+            temp_ts_set.append(ts)
+            temp_mask_set.append(mask)
+    else:
+        for i in range(1):
+            ts, mask = specific_chipper(ts_arr, mask_arr, h_list[i], w_list[i], input_size=input_size)
+            ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+            mask = mask.reshape((mask.shape[1],mask.shape[2]))
+
+            ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+
+            temp_ts_set.append(ts)
+            temp_mask_set.append(mask)
 
     train_ts_set = np.stack(temp_ts_set, axis=0)
     train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
@@ -358,96 +362,17 @@ def main():
 
     print(f'chunk sequence shape: {new_set.shape}') # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
 
-    (I,L2,N,SL,C,H,W) = new_set.shape
+    return new_set, train_mask_set, train_ts_set
 
-    # rev_chunk_set = reverse_chunks(new_set, num_seq)
-    # print(f'reverse chunk shape: {rev_chunk_set.shape}')
-    # rev_window_set = reverse_seq(rev_chunk_set, seq_length)
-    # print(f'reverse window shape: {rev_window_set.shape}')
-    # print("are the reconstructed chunk set and original set equal?",np.array_equal(rev_chunk_set,im_set))
-    # print("are the reconstructed ts set and original set equal?",np.array_equal(rev_window_set,train_ts_set))
+
+def get_feature_arr(new_set, train_mask_set,model, unet_segment, optimizer, num_seq, seq_length):
 
     test_set = tsDataset(new_set, train_mask_set)
-
-    # 3. Create data loaders
+    # Create data loaders
     loader_args = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
     train_dl = DataLoader(test_set, **loader_args)
     val_dl = DataLoader(test_set, **loader_args)
-        
-    ### dpc model ###
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
-    model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0927_13band_unetvae_hls_8_0.00016154855853173791.pth'
-
-    model = DPC_RNN_UNet(sample_size=64,
-                    device=device,
-                    num_seq=4, 
-                    seq_len=6, 
-                    network='unet-vae',
-                    # network="rqunet-vae-encoder",
-                    pred_step=1,
-                    model_weight=model_checkpoint,
-                    freeze=True)
-
-    unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
-
-    # model = nn.DataParallel(model)
-
-    if torch.cuda.is_available():
-        model = model.to(cuda)
-        unet_segment = unet_segment.to(cuda)
-
-    global criterion; 
-    criterion_type = "crossentropy"
-    if criterion_type == "crossentropy":
-        # criterion = models.losses.MultiTemporalCrossEntropy()
-        criterion = criterion = torch.nn.CrossEntropyLoss()
-    elif criterion_type == "focal_tverski":
-        criterion = models.losses.FocalTversky()
-    elif criterion_type == "dice":
-        criterion = models.losses.MultiTemporalDiceLoss()
-
-    ### optimizer ###
-    params = model.parameters()
-    optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
-    args.old_lr = None
-
-    ### restart training ###
-    if args.resume:
-        if os.path.isfile(args.resume):
-            args.old_lr = float(re.search('_lr(.+?)_', args.resume).group(1))
-            print("=> loading resumed checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
-            args.start_epoch = checkpoint['epoch']
-            iteration = checkpoint['iteration']
-            best_acc = checkpoint['best_acc']
-            model.load_state_dict(checkpoint['state_dict'])
-            if not args.reset_lr: # if didn't reset lr, load old optimizer
-                optimizer.load_state_dict(checkpoint['optimizer'])
-            else: print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
-            print("=> loaded resumed checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-        else:
-            print("[Warning] no checkpoint found at '{}'".format(args.resume))
-
-    if args.pretrain:
-        if os.path.isfile(args.pretrain):
-            print("=> loading pretrained checkpoint '{}'".format(args.pretrain))
-            checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
-            model = neq_load_customized(model, checkpoint['state_dict'])
-            print("=> loaded pretrained checkpoint '{}' (epoch {})"
-                  .format(args.pretrain, checkpoint['epoch']))
-        else: 
-            print("=> no checkpoint found at '{}'".format(args.pretrain))
-
-    ### load data ###
-
-    print("Start training process!")
-
-    # setup tools
     
-    ### main loop ###
     print(f"length of dpc input training set {len(train_dl)}")
 
     all_feature_arr = []
@@ -487,60 +412,7 @@ def main():
     all_feature_arr = reverse_seq(all_feature_arr, seq_length)
     print(f'reversed windown context vector shape: {all_feature_arr.shape}')
 
-    # print(f"train mask set shape: {train_mask_set.shape}")
-
-    print("Finished with DPC training")
-    print("Start Poisson segmentation!")
-
-    y_preds = []
-
-    for i in range(all_feature_arr.shape[0]):
-
-        (y_pred, x ,y_true) = poisson_segment(all_feature_arr[i], train_ts_set[i], train_mask_set[i])
-        y_preds.append((y_pred, x ,y_true))
-
-    data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
-
-    with open(f'{data_dir}{ts_name}_poisson_stat_results.csv','w') as f1:
-        writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
-        writer.writerow(['id','accuracy','precision','recall','f1-score'])
-        for idx in range(all_feature_arr.shape[0]):
-        # for idx, (y_pred, x, y) in enumerate(y_preds):
-            (y_pred, x ,y_true) = poisson_segment(all_feature_arr[idx], train_ts_set[idx], train_mask_set[idx])
-
-            accuracy, precision, recall, f1_score = get_accuracy(y_pred, y_true)
-
-            writer.writerow([idx, accuracy, precision, recall, f1_score])
-
-            plt.figure(figsize=(20,20))
-            # plt.subplot(1,3,1)
-            # plt.title("Image")
-            # image = np.transpose(x[5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
-            # # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-            # plt.imshow(rescale_truncate(image))
-            # plt.subplot(1,3,2)
-            # plt.title("Segmentation Label")
-            # image = np.transpose(y[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
-            # plt.imshow(image)
-        
-            # plt.subplot(1,3,3)
-            # plt.title(f"Segmentation Pred")
-            image = np.transpose(y_pred[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
-            plt.imshow(image)
-            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-poisson.png")
-
-            plt.close()
-
-    print('Poisson Semi Supervised Finished')
-
-def process_output(mask):
-    '''task mask as input, compute the target for contrastive loss'''
-    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
-    # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-    (B, NP, SQ, B2, NS, _) = mask.size() # [B, P, SQ, B, N, SQ]
-    target = mask == 1
-    target.requires_grad = False
-    return target, (B, B2, NS, NP, SQ)
+    return all_feature_arr
 
 def train_dpc(data_loader, dpc_model, segment_model, optimizer, epoch, num_seq, seq_length):
 
@@ -575,18 +447,51 @@ def train_dpc(data_loader, dpc_model, segment_model, optimizer, epoch, num_seq, 
     return feature_arr.cpu().detach()
 
 
-def poisson_segment(feature_arr, ts, label, input_size = 64):
+def stack_features(feature_arr, label, feats, type='train', train_ind_lst=[], train_labels_lst=[]):
+
+    # get mean of features array
+    X = feature_arr.mean(axis=0) # (FxHxW)
+
+    label = label.reshape((label.shape[0]*label.shape[1]))
+    X = np.transpose(X,(1,2,0))
+    X = X.reshape((X.shape[0]*X.shape[1],X.shape[2]))
+
+    if type == 'train':
+        if feats.size == 0:
+            pixel_vals = np.float32(X)
+        else:
+            pixel_vals = np.vstack((feats,np.float32(X)))
+
+        rate_train_per_class = 0.4
+        train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
+        train_labels = label[train_ind]
+
+        # print(train_ind)
+        # print(train_labels)
+        # print(type(train_ind))
+
+        # train_ind_lst.append(train_ind)
+        # train_labels_lst.append(train_labels)
+
+        train_ind_lst = train_ind
+        train_labels_lst = train_labels
+
+    else:
+        pixel_vals = np.vstack((feats, np.float32(X)))
+
+    return pixel_vals, train_ind_lst, train_labels_lst
+
+def poisson_segment(feature_arr, ts, label, type='train', input_size = 64):
     '''
     feature_arr: 4D tensor TxFxHxW
     '''
     #build dataset
     # print(f'ts shape: {ts.shape}')
     X = feature_arr.mean(axis=0) # (FxHxW)
+    label_old = label
 
     # X = ts.mean(axis=0)
     # X = feature_arr[5]
-
-    label_old = label
 
     label = label.reshape((label.shape[0]*label.shape[1]))
     X = np.transpose(X,(1,2,0))
@@ -605,16 +510,227 @@ def poisson_segment(feature_arr, ts, label, input_size = 64):
     W = gl.weightmatrix.knn(X, k=k)
     
     #Run Poisson learning
-    class_priors = gl.utils.class_priors(label)
-    model = gl.ssl.poisson(W, class_priors, solver='gradient_descent')
+    # class_priors = gl.utils.class_priors(label)
+    # model = gl.ssl.poisson(W, class_priors, solver='gradient_descent')
+    model = gl.ssl.poisson(W, solver='gradient_descent')
     pred_label = model.fit_predict(train_ind, train_labels)
 
+    # u = model.fit(train_ind, train_labels)
+    # pred_label = model.predict()
     accuracy = gl.ssl.ssl_accuracy(pred_label, label, len(train_ind))   
     print("Accuracy: %.2f%%"%accuracy)
-    
     segmented_image = pred_label.reshape((input_size,input_size))
 
     return segmented_image, ts, label_old
+
+def poisson_predict(stacked_features, train_ind, train_labels, input_size = 64):
+
+    X = stacked_features
+
+   #Build a knn graph
+    k = 1000
+    W = gl.weightmatrix.knn(X, k=k)
+    
+    #Run Poisson learning
+    # class_priors = gl.utils.class_priors(label)
+    model = gl.ssl.poisson(W, solver='gradient_descent')
+    pred_label = model.fit_predict(train_ind, train_labels)
+
+    # accuracy = gl.ssl.ssl_accuracy(pred_label, label, len(train_ind))   
+    # print("Accuracy: %.2f%%"%accuracy)
+    # segmented_image = pred_label.reshape((input_size,input_size))
+
+    return pred_label
+
+def main():
+    torch.manual_seed(42)
+    np.random.seed(42)
+    global args; args = parser.parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
+    global cuda; cuda = torch.device('cuda')
+
+    # prepare data
+    ### hls data
+    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    with h5py.File(filename, "r") as f:
+        print("Keys: %s" % f.keys())
+
+    ts_name = 'TS05'
+
+    seq_length = 6
+    num_seq = 4
+    input_size = 64 ## 64
+    total_ts_len = 10 # L
+
+    padding_size = 0
+
+    num_chips = 1
+    
+    new_set, train_mask_set, train_ts_set = get_data('Tappan01', specific=False, iteration=num_chips)
+    (I,L2,N,SL,C,H,W) = new_set.shape
+
+    new_test_set, test_mask_set, test_ts_set = get_data('Tappan01')
+
+    ### dpc model ###
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
+    model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0927_13band_unetvae_hls_8_0.00016154855853173791.pth'
+
+    model = DPC_RNN_UNet(sample_size=64,
+                    device=device,
+                    num_seq=4, 
+                    seq_len=6, 
+                    network='unet-vae',
+                    # network="rqunet-vae-encoder",
+                    pred_step=1,
+                    model_weight=model_checkpoint,
+                    freeze=True)
+
+    unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
+
+    if torch.cuda.is_available():
+        model = model.to(cuda)
+        unet_segment = unet_segment.to(cuda)
+
+    ### optimizer ###
+    params = model.parameters()
+    optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
+    args.old_lr = None
+
+    ### main loop ###
+    
+    all_feature_arr = get_feature_arr(new_set,train_mask_set,model,unet_segment,optimizer,num_seq,seq_length)
+    test_feature_arr = get_feature_arr(new_test_set,test_mask_set,model,unet_segment,optimizer,num_seq,seq_length)
+
+    print("Finished with DPC training")
+    print("Start Poisson segmentation!")
+
+    data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
+
+    train_ind_lst = []
+    train_labels_lst = []
+    feats_ini = []
+    feats_ini = np.asarray(feats_ini)
+
+    for idx in range(all_feature_arr.shape[0]):
+
+        train_features, train_ind_lst, train_labels_lst = stack_features(all_feature_arr[idx],train_mask_set[idx], \
+            feats = feats_ini, type='train', train_ind_lst=train_ind_lst, train_labels_lst=train_labels_lst)
+
+        feats_ini = train_features
+
+    print(f'train features shape: {train_features.shape}')
+
+    for idx in range(test_feature_arr.shape[0]):
+
+        stacked_features, train_ind_lst, train_labels_lst = stack_features(test_feature_arr[idx],test_mask_set[idx], \
+            feats = train_features, type='test', train_ind_lst=train_ind_lst, train_labels_lst=train_labels_lst)
+
+        train_features = stacked_features
+
+    # train_ind_arr = np.stack(train_ind_lst, axis=0)
+    # train_labels_arr = np.stack(train_labels_lst, axis=0)
+
+    # train_ind_arr = train_ind_arr.reshape((train_ind_arr.shape[0]*train_ind_arr.shape[1]))
+    # train_labels_arr = train_labels_arr.reshape((train_labels_arr.shape[0]*train_labels_arr.shape[1]))
+
+    train_ind_arr = train_ind_lst
+    train_labels_arr = train_labels_lst
+
+    print(f'train ind arr shape: {train_ind_arr.shape}')
+    print(f'train label arr shape: {train_labels_arr.shape}')
+
+    print(f'stacked features shape: {stacked_features.shape}')
+
+    labels_poisson = poisson_predict(stacked_features, train_ind_arr, train_labels_arr)
+
+    print(f'label_poisson shape: {labels_poisson.shape}')
+
+    i=0
+    segment_images=[]
+    for i in range(num_chips+10):
+        segment_images.append(labels_poisson[i*(input_size*input_size):(i+1)*(input_size*input_size)])
+
+    print(f'length of segment images: {len(segment_images)}')
+
+    with open(f'{data_dir}{ts_name}_poisson_stat_results.csv','w') as f1:
+        writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
+        writer.writerow(['id','accuracy','precision','recall','f1-score','mIoU'])
+        for idx in range(0,len(segment_images)):
+
+            y_pred = segment_images[idx]
+            y_pred = y_pred.reshape((input_size,input_size))
+            print(f'y pred shape: {y_pred.shape}')
+
+            y_true = test_mask_set[idx-num_chips]
+            x = test_ts_set[idx-num_chips]
+
+            accuracy, precision, recall, f1_score, iou = get_accuracy(y_pred, y_true)
+            writer.writerow([idx, accuracy, precision, recall, f1_score, iou])
+
+            plt.figure(figsize=(20,20))
+            plt.subplot(1,3,1)
+            plt.title("Image")
+            image = np.transpose(x[5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
+            # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+            plt.imshow(rescale_truncate(image))
+
+            plt.subplot(1,3,2)
+            plt.title("Segmentation Label")
+            image = np.transpose(y_true[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+            plt.imshow(image)
+
+            plt.subplot(1,3,3)
+            plt.title(f"Segmentation Prediction")
+            image = np.transpose(y_pred[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+            plt.imshow(image)
+            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-poisson.png")
+            plt.close()
+
+    # with open(f'{data_dir}{ts_name}_poisson_stat_results_train.csv','w') as f1:
+    #     writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
+    #     writer.writerow(['id','accuracy','precision','recall','f1-score','mIoU'])
+    #     for idx in range(all_feature_arr.shape[0]):
+    #     # for idx, (y_pred, x, y) in enumerate(y_preds):
+    #         (y_pred, x ,y_true) = poisson_segment(all_feature_arr[idx], train_ts_set[idx], train_mask_set[idx])
+    #         # (y_pred, x ,y_true) = poisson_predict(model, test_feature_arr[idx], test_ts_set[idx], test_mask_set[idx])
+
+    #         accuracy, precision, recall, f1_score, iou = get_accuracy(y_pred, y_true)
+    #         writer.writerow([idx, accuracy, precision, recall, f1_score, iou])
+
+    #         plt.figure(figsize=(20,20))
+    #         plt.subplot(1,3,1)
+    #         plt.title("Image")
+    #         image = np.transpose(x[5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
+    #         # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+    #         plt.imshow(rescale_truncate(image))
+    #         plt.subplot(1,3,2)
+    #         plt.title("Segmentation Label")
+    #         image = np.transpose(y_true[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+    #         plt.imshow(image)
+        
+    #         plt.subplot(1,3,3)
+    #         plt.title(f"Segmentation Prediction")
+    #         image = np.transpose(y_pred[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+    #         plt.imshow(image)
+    #         plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-poisson.png")
+
+    #         plt.close()
+
+    print('Poisson Semi Supervised Finished')
+
+def process_output(mask):
+    '''task mask as input, compute the target for contrastive loss'''
+    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
+    # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
+    (B, NP, SQ, B2, NS, _) = mask.size() # [B, P, SQ, B, N, SQ]
+    target = mask == 1
+    target.requires_grad = False
+    return target, (B, B2, NS, NP, SQ)
+
+
 
 
 if __name__ == '__main__':

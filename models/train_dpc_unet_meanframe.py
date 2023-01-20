@@ -315,18 +315,18 @@ def main():
     # ts_arr = ts_arr[:,::-1,:,:]
 
     ## get different chips in the Tappan Square for multiple time series
-    iteration = 10 # I
-    h_list =[10,20,30,40,50,70,80,90,100,110]
-    w_list =[15,25,35,45,55,75,85,95,105,115]
+    # iteration = 10 # I
+    # h_list =[10,20,30,40,50,70,80,90,100,110]
+    # w_list =[15,25,35,45,55,75,85,95,105,115]
+
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(len(h_list)):
-        ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
-    # temp_ts_set = []
-    # temp_mask_set = []
-    # for i in range(iteration):
-    #     ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
+    # for i in range(len(h_list)):
+    #     ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
+
+    for i in range(iteration):
+        ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 

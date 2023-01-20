@@ -162,7 +162,7 @@ class UNet_test(nn.Module):
         the tranpose convolution (specified by upmode='transpose')
     """
 
-    def __init__(self, num_classes, in_channels=3, depth=5, 
+    def __init__(self, num_classes, in_channels=3, segment=True, depth=5, 
                  start_filts=64, up_mode='upsample', 
                  merge_mode='concat'):
         """
@@ -204,6 +204,7 @@ class UNet_test(nn.Module):
         self.num_classes = num_classes
         self.in_channels = in_channels
         self.start_filts = start_filts
+        self.segment = segment
         self.depth = depth
 
         self.down_convs = []
@@ -282,8 +283,9 @@ class UNet_test(nn.Module):
         # No softmax is used. This means you need to use
         # nn.CrossEntropyLoss is your training script,
         # as this module includes a softmax already.
-        x = self.conv_final(x)
+        if self.segment:
+            x = self.conv_final(x)
+        else:
+            x = F.relu(x)
 
-        #x = F.relu(x)
-        #x = F.log_softmax(x, 1)
         return x

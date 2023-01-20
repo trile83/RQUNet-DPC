@@ -21,7 +21,7 @@ import h5py
 import logging
 import cv2
 import csv
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, classification_report
+from sklearn.metrics import jaccard_score, balanced_accuracy_score, confusion_matrix, classification_report
 import rioxarray as rxr
 from tensorboardX import SummaryWriter
 
@@ -250,10 +250,11 @@ def get_accuracy(y_pred, y_true):
     # get overall weighted accuracy
     accuracy = balanced_accuracy_score(y_true, y_pred, sample_weight=None)
     report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True)
+    iou = jaccard_score(y_pred, y_true, average="micro")
     precision = report['cropland']['precision']
     recall = report['cropland']['recall']
     f1_score = report['cropland']['f1-score']
-    return accuracy, precision, recall, f1_score
+    return accuracy, precision, recall, f1_score, iou
 
 
 def padding_ts(ts, mask, padding_size=10):
@@ -298,10 +299,10 @@ def main():
     filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
     with h5py.File(filename, "r") as file:
         print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan02_PEV_ts'][()]
-        mask_arr = file['Tappan02_mask'][()]
+        ts_arr = file['Tappan05_PEV_ts'][()]
+        mask_arr = file['Tappan05_mask'][()]
 
-    ts_name = 'TS02'
+    ts_name = 'TS05'
     #### tappan 04, 06, and tapp 17 has several begining frames in time series black or small partial area in the images
 
     # get RGB image
@@ -326,6 +327,9 @@ def main():
     h_list =[10,20,30,40,50,70,80,90,100,110]
     w_list =[15,25,35,45,55,75,85,95,105,115]
 
+    # h_list =[30]
+    # w_list =[35]
+
     temp_ts_set = []
     temp_mask_set = []
     for i in range(len(h_list)):
@@ -333,14 +337,14 @@ def main():
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
-        ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+        # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
         temp_ts_set.append(ts)
         temp_mask_set.append(mask)
 
     train_ts_set = np.stack(temp_ts_set, axis=0)
-    # train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
-    train_ts_set = train_ts_set[:,-total_ts_len:] # for time series TS04 and TS17
+    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
+    # train_ts_set = train_ts_set[:,-total_ts_len:] # for time series TS04 and TS17
     train_mask_set = np.stack(temp_mask_set, axis=0)
 
     print(f"train ts set shape: {train_ts_set.shape}")
@@ -361,7 +365,7 @@ def main():
     # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_epoch222.pth'
 
     ### 13 bands
-    unetsegment_checkpoint = f'{str(model_dir)}unet_eachframe_control_13band_epoch_176.pth'
+    unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_13band_epoch_192.pth'
 
     ### 13 band padded
     # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'
@@ -403,7 +407,7 @@ def main():
     ### main loop ###
 
     train_seg_set = tsDataset(train_ts_set, train_mask_set)
-    loader_args_1 = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
+    loader_args_1 = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
     train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
 
     # print(f"Length of segmentation input set {len(train_segment_dl)}")
@@ -415,15 +419,15 @@ def main():
 
     batch_size = 1
 
-    with open(f'{data_dir}{ts_name}_stat_results.csv','w') as f1:
+    with open(f'{data_dir}{ts_name}_unet_stat_results.csv','w') as f1:
         writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
-        writer.writerow(['id','accuracy','precision','recall','f1-score'])
+        writer.writerow(['id','frame','accuracy','precision','recall','f1-score','mIoU'])
 
         for idx, batch in enumerate(train_segment_dl):
             x = batch['ts'].to(cuda, dtype=torch.float32)
             y = batch['mask'].numpy()
 
-            # print(f"im shape: {z.shape}")
+            # print(f"im shape: {x.shape}")
             # print(f"y shape: {y.shape}")
             x_ori = x
 
@@ -453,36 +457,40 @@ def main():
             # print(f'x 5 max value: {torch.max(x_5)}')
 
             # predict mean of time series
-            # output = unet_segment(x_mean)
-            output = unet_segment(x_0)
+            output = unet_segment(x_mean)
+            # output = unet_segment(x)
 
             y_pred = output[0]
+            # print(f'y pred shape: {y_pred.shape}')
 
             index_array = torch.argmax(y_pred, dim=1)
-            print(f"index array shape: {index_array.shape}")
+            # print(f"index array shape: {index_array.shape}")
 
-            accuracy, precision, recall, f1_score = get_accuracy(index_array.cpu().numpy()[0], y)
+            frame=5
 
-            writer.writerow([idx, accuracy, precision, recall, f1_score])
+            # for frame in range(x_ori.shape[1]):
+
+            accuracy, precision, recall, f1_score, iou = get_accuracy(index_array.cpu().numpy(), y)
+            writer.writerow([idx, frame, accuracy, precision, recall, f1_score, iou])
 
             plt.figure(figsize=(20,20))
-            # plt.subplot(1,3,1)
+            plt.subplot(1,3,1)
             plt.title("Image")
-            image = np.transpose(x_ori[0,0,1:4,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (1,2,0))
+            image = np.transpose(x_ori[0,frame,1:4,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (1,2,0))
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             plt.imshow(rescale_truncate(image))
-            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
-            # plt.subplot(1,3,2)
+            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
+            plt.subplot(1,3,2)
             plt.title("Segmentation Label")
             image = np.transpose(y[0,padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
             plt.imshow(image)
-            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
+            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
         
-            # plt.subplot(1,3,3)
+            plt.subplot(1,3,3)
             plt.title(f"Segmentation w accuracy {accuracy}")
             image = np.transpose(index_array[0,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (0,1))
             plt.imshow(image)
-            plt.savefig(f"{str(data_dir)}{ts_name}-unet-{str(idx)}-unet.png")
+            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-{str(frame)}-unet-pred.png")
 
             plt.close()
 
