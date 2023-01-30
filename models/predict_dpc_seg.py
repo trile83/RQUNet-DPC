@@ -14,12 +14,14 @@ from dpc.model_3d import *
 from dpc.model_3d_unet import *
 from backbone.resnet_2d3d import neq_load_customized
 from utils.augmentation import *
-from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy
+from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy, calc_accuracy
+from sklearn.metrics import jaccard_score, balanced_accuracy_score, confusion_matrix, classification_report
 from tqdm import tqdm
 import argparse
 import h5py
+import csv
+import torchvision.utils as vutils
 import logging
-import cv2
 import rioxarray as rxr
 from tensorboardX import SummaryWriter
 
@@ -38,7 +40,7 @@ parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -83,10 +85,11 @@ def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
 
 class satDataset(Dataset):
     'Characterizes a dataset for PyTorch'
-    def __init__(self, X, Y):
+    def __init__(self, X, Y, Z):
         'Initialization'
         self.data = X
         self.mask = Y
+        self.ts = Z
 
     def __len__(self):
         'Denotes the total number of samples'
@@ -97,18 +100,21 @@ class satDataset(Dataset):
         # Select sample
         X = self.data[index]
         Y = self.mask
+        Z = self.ts
 
         return {
             'x': X,
-            'mask': Y
+            'mask': Y,
+            'ts': Z
         }
 
 class tsDataset(Dataset):
     'Characterizes a dataset for PyTorch'
-    def __init__(self, X, Y):
+    def __init__(self, X, Y, Z):
         'Initialization'
         self.data = X
         self.mask = Y
+        self.ts = Z
 
     def __len__(self):
         'Denotes the total number of samples'
@@ -119,10 +125,12 @@ class tsDataset(Dataset):
         # Select sample
         X = self.data[index]
         Y = self.mask[index]
+        Z = self.ts[index]
 
         return {
             'ts': torch.tensor(X),
-            'mask': torch.LongTensor(Y)
+            'mask': torch.LongTensor(Y),
+            'ori': Z
         }
 
 
@@ -163,10 +171,6 @@ def get_seq(sequence, seq_length):
             array = sequence[j,i-seq_length:i,:,:,:] # SL, C, H, W
             all_arr[j,i-seq_length] = array
 
-        # for i in range(L-seq_length): # same results
-        #     array = sequence[j,i:i+seq_length,:,:,:] # SL, C, H, W
-        #     all_arr[j,i] = array
-
     return all_arr
 
 def get_chunks(windows, num_seq):
@@ -184,6 +188,10 @@ def get_chunks(windows, num_seq):
             if not array.any():
                 print(f"i {i}")
             all_arr[j,i-num_seq] = array
+
+        # for i in range(L1-num_seq): # same results
+        #     array = windows[j,i:i+num_seq,:,:,:,:] # N, SL, C, H, W
+        #     all_arr[j,i] = array
 
     return all_arr
 
@@ -297,6 +305,23 @@ def padding_ts(ts, mask, padding_size=10):
     return padded_ts, padded_mask
 
 
+def get_accuracy(y_pred, y_true):
+
+    target_names = ['non-crop','cropland']
+
+    y_true = y_true.flatten()
+    y_pred = y_pred.flatten()
+
+    # get overall weighted accuracy
+    accuracy = balanced_accuracy_score(y_true, y_pred, sample_weight=None)
+    report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True)
+    iou = jaccard_score(y_pred, y_true, average="micro")
+    precision = report['cropland']['precision']
+    recall = report['cropland']['recall']
+    f1_score = report['cropland']['f1-score']
+    return accuracy, precision, recall, f1_score, iou
+
+
 def main():
     torch.manual_seed(0)
     np.random.seed(0)
@@ -310,13 +335,15 @@ def main():
     filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan01_PEV_ts'][()]
-        mask_arr = file['Tappan01_mask'][()]
+        ts_arr = file['Tappan05_PEV_ts'][()]
+        mask_arr = file['Tappan05_mask'][()]
+
+    ts_name = 'TS05'
 
     seq_length = 6
     num_seq = 4
     input_size = 64 ## 64
-    total_ts_len = 10 # L
+    total_ts_len = 12 # L
 
     padding_size = 8
     
@@ -331,19 +358,21 @@ def main():
     # ts_arr = ts_arr[:,::-1,:,:]
 
     ## get different chips in the Tappan Square for multiple time series
+    h_list =[10,20,30,40,50,70,80,90,100,110,150]
+    w_list =[15,25,35,45,55,75,85,95,105,115,160]
+
+    num_val = 1
     num_chips = 11 # I
-    num_val=1
-    h_list =[10,20,30,40,50,70,80,90,100,110]
-    w_list =[15,25,35,45,55,75,85,95,105,115]
 
     temp_ts_set = []
     temp_mask_set = []
+    for i in range(len(h_list)):
+        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
 
-    # for i in range(len(h_list)):
-    #     ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
-
-    for i in range(num_chips+num_val):
-        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+    # for i in range(num_chips):
+    #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+        if np.any(ts == -10000):
+            continue
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         for j in range(ts.shape[0]):
             ts[j] = rescale_image(ts[j])
@@ -354,276 +383,180 @@ def main():
         temp_ts_set.append(ts)
         temp_mask_set.append(mask)
 
-    train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
-    train_mask_set = np.stack(temp_mask_set, axis=0)
+    ts_set = np.stack(temp_ts_set, axis=0)
+    train_ts_set = ts_set[:,:total_ts_len] # get the first 100 in the time series
+    mask_set = np.stack(temp_mask_set, axis=0)
+    train_mask_set = mask_set[:]
+
+    del ts_set
+    del mask_set
 
     print(f"train ts set shape: {train_ts_set.shape}")
     print(f"train mask set shape: {train_mask_set.shape}")
 
+    im_set = get_seq(train_ts_set, seq_length) #(I,L1,SL,C,H,W)
+    print(f'window sequence shape: {im_set.shape}')
+
+    new_set = get_chunks(im_set, num_seq)
+
+    print(f'chunk sequence shape: {new_set.shape}') # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
+
+    (I,L2,N,SL,C,H,W) = new_set.shape
+
+    train_set = tsDataset(new_set[:-num_val], train_mask_set[:-num_val], train_ts_set[:-num_val])
+    val_set = tsDataset(new_set[-num_val:], train_mask_set[-num_val:], train_ts_set[-num_val:])
+
+    # 3. Create data loaders
+    loader_args = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
+    val_loader_args = dict(batch_size=num_val, num_workers=4, pin_memory=True, drop_last=False, shuffle=False)
+    train_dl = DataLoader(train_set, **loader_args)
+    val_dl = DataLoader(val_set, **val_loader_args)
         
     ### dpc model ###
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
+
     # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
-    # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0927_13band_unetvae_hls_8_0.00016154855853173791.pth'
+    encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unetvae_hls_98_2.7315708488893155e-06.pth'
 
-    # model = DPC_RNN_UNet(sample_size=64,
-    #                 device=device,
-    #                 num_seq=4, 
-    #                 seq_len=6, 
-    #                 network='unet-vae',
-    #                 # network="rqunet-vae-encoder",
-    #                 pred_step=1,
-    #                 model_weight=model_checkpoint,
-    #                 freeze=True)
+    model = DPC_RNN_UNet(sample_size=input_size,
+                    device=device,
+                    num_seq=4, 
+                    seq_len=6, 
+                    network=network,
+                    pred_step=1,
+                    model_weight=encoder_weight,
+                    freeze=True)
 
-    # unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=13)
-    unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
-    # unet_segment = UNet3D(in_channel=5, n_classes=2)
+    model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
 
-    # model = nn.DataParallel(model)
+    ### 13 bands
+    model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
+
+    model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
     if torch.cuda.is_available():
-        # model = model.to(cuda)
-        unet_segment = unet_segment.to(cuda)
+        model = model.to(cuda)
 
     global criterion; 
     criterion_type = "crossentropy"
     if criterion_type == "crossentropy":
         # criterion = models.losses.MultiTemporalCrossEntropy()
-        criterion = criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CrossEntropyLoss()
     elif criterion_type == "focal_tverski":
         criterion = models.losses.FocalTversky()
     elif criterion_type == "dice":
         criterion = models.losses.MultiTemporalDiceLoss()
 
+    global iteration; iteration = 0
+    best_acc = 0
+
     ### optimizer ###
-    # params = model.parameters()
-    # optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
-
-    segment_optimizer = optim.Adam(unet_segment.parameters(), lr=0.0001, weight_decay=0.000)
+    params = model.parameters()
+    optimizer = optim.Adam(params, lr=0.001, weight_decay=0.0001)
     args.old_lr = None
-
-    ### restart training ###
-    if args.resume:
-        if os.path.isfile(args.resume):
-            args.old_lr = float(re.search('_lr(.+?)_', args.resume).group(1))
-            print("=> loading resumed checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
-            args.start_epoch = checkpoint['epoch']
-            iteration = checkpoint['iteration']
-            best_acc = checkpoint['best_acc']
-            model.load_state_dict(checkpoint['state_dict'])
-            if not args.reset_lr: # if didn't reset lr, load old optimizer
-                segment_optimizer.load_state_dict(checkpoint['optimizer'])
-            else: print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
-            print("=> loaded resumed checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-        else:
-            print("[Warning] no checkpoint found at '{}'".format(args.resume))
-
-    if args.pretrain:
-        if os.path.isfile(args.pretrain):
-            print("=> loading pretrained checkpoint '{}'".format(args.pretrain))
-            checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
-            model = neq_load_customized(model, checkpoint['state_dict'])
-            print("=> loaded pretrained checkpoint '{}' (epoch {})"
-                  .format(args.pretrain, checkpoint['epoch']))
-        else: 
-            print("=> no checkpoint found at '{}'".format(args.pretrain))
 
     ### load data ###
 
-    print("Start training process!")
+    print("Start prediction process!")
 
-    # setup tools
-    global de_normalize; de_normalize = denorm()
-    global img_path; img_path, model_path = set_path(args)
-    model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
-    
-    ### main loop ###
-    train_loss_lst = []
-    val_loss_lst = []
+    ## visualize
 
-    # print(f"train mask set shape: {train_mask_set.shape}")
+    data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
 
-    train_seg_set = tsDataset(train_ts_set[:-num_val],  train_mask_set[:-num_val])
-    val_seg_set = tsDataset(train_ts_set[-num_val:],  train_mask_set[-num_val:])
-    loader_args_1 = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
-    train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
-    val_segment_dl = DataLoader(val_seg_set, **loader_args_1)
+    batch_size = 1
 
-    print(f"Length of segmentation input training set {len(train_segment_dl)}")
-    print("Start segmentation training!")
+    with open(f'{data_dir}{ts_name}_unet_stat_results.csv','w') as f1:
+        writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
+        writer.writerow(['id','frame','accuracy','precision','recall','f1-score','mIoU'])
 
-    best_acc = 0
-    min_loss = np.inf
+        ### main loop ##
+        print(f"length of dpc input training set {len(train_dl)}")
 
-    for epoch in range(args.start_epoch, args.epochs):
-        train_loss = train_segment(train_segment_dl, unet_segment, segment_optimizer)
-        val_loss = val_segment(train_segment_dl, unet_segment, segment_optimizer)
+        for idx, input in enumerate(train_dl):
 
-        # saved loss value in list
-        train_loss_lst.append(train_loss)
-        val_loss_lst.append(val_loss)
+            input_ts = input['ts']
+            input_mask = input['mask']
+            ori_ts = input['ori']
 
-        print(f"train loss: {train_loss}")
-        print(f"val loss: {val_loss}")
+            # print('original ts shape: ', ori_ts.shape)
 
-        # save check_point
-        is_best = val_loss < min_loss
+            (I,L2,N,SL,C,H,W) = input_ts.shape
 
-        if is_best:
-            min_loss = val_loss
+            input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
 
-            # save unet segment weights
-            save_checkpoint({'epoch': epoch+1,
-                            'net': args.net,
-                            'state_dict': unet_segment.state_dict(),
-                            'min_loss': min_loss,
-                            'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_13band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+            train_set = satDataset(input_ts, input_mask, ori_ts)
 
-    plt.plot(train_loss_lst, color ="blue")
-    plt.plot(val_loss_lst, color = "red")
-    plt.savefig("/home/geoint/tri/dpc_test_out/unet_mean_train_loss.png")
-    plt.close()
+            loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
+            train_sat_dl = DataLoader(train_set, **loader_args_sat)
 
-    print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
+            output, _ = predict_dpc(train_sat_dl, model, network)
 
-def process_output(mask):
-    '''task mask as input, compute the target for contrastive loss'''
-    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
-    # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-    (B, NP, SQ, B2, NS, _) = mask.size() # [B, P, SQ, B, N, SQ]
-    target = mask == 1
-    target.requires_grad = False
-    return target, (B, B2, NS, NP, SQ)
+            frame = 5
+
+            # visualize predictions
+            index_array = torch.argmax(output, dim=1)
+            z = ori_ts.numpy()
+            y = input_mask
+
+            accuracy, precision, recall, f1_score, iou = get_accuracy(index_array.cpu().numpy(), y)
+            writer.writerow([idx, frame, accuracy, precision, recall, f1_score, iou])
 
 
-def train_segment(data_loader, segment_model, optimizer):
+            plt.figure(figsize=(20,20))
+            plt.subplot(1,3,1)
+            plt.title("Image")
+            image = np.transpose(z[0,frame,1:4,:,:], (1,2,0))
+            # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+            image = rescale_truncate(image)
+            plt.imshow(image)
+            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
+            plt.subplot(1,3,2)
+            plt.title("Segmentation Label")
+            image = np.transpose(y[0,:,:], (0,1))
+            plt.imshow(image)
+            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
+        
+            plt.subplot(1,3,3)
+            plt.title(f"Segmentation Prediction")
+            image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
+            plt.imshow(image)
+            plt.savefig(f"/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/predict-{ts_name}-{str(idx)}-dpc-unet-pred.png")
+            plt.close()
+
+def predict_dpc(data_loader, dpc_model, network):
     losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.train()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['ts'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,L,F,H,W) = features.shape
-        batch = 1
-
-        features = features.view(B*L,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        # print(f"features shape: {features.shape}")
-        # print(f"mask shape: {input_mask.shape}")
-
-        mask_pred, _ = segment_model(features)
-
-        # print(f"mask pred shape: {mask_pred.shape}")
-
-        loss = criterion(mask_pred, input_mask)
-
-        # losses.update(loss['loss'].item(), B)
-        # optimizer.zero_grad()
-        # loss['loss'].backward()
-        # optimizer.step()
-
-        losses.update(loss.item(), B)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    # return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
-    return losses.local_avg
-
-
-def val_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.eval()
+    dpc_model.eval()
     global iteration
 
     with torch.no_grad():
-        for idx, input in tqdm(enumerate(data_loader), total=len(data_loader)):
+        for idx, input in enumerate(data_loader):
 
-            features = input['ts'].to(cuda, dtype=torch.float32)
-            input_mask = input['mask'].to(cuda, dtype=torch.long)
+            tic = time.time()
+            input_seq = input["x"]
+            input_mask = input["mask"]
 
-            (B,L,F,H,W) = features.shape
-            batch = 1
+            input_seq = input_seq.to(cuda, dtype=torch.float32)
+            input_mask = input_mask.to(cuda, dtype=torch.long)
 
-            features = features.view(B*L,F,H,W)
-            features = features.mean(dim=0)
-            features = features.view(batch,F,H,W)
-            input_mask = input_mask.view(batch,H,W)
+            (B,N,SL,C,H,W) = input_seq.shape
+            
+            input_mask = input_mask.view(1, H, W)
+            B = input_seq.size(0)
 
-            # print(f"features shape: {features.shape}")
-            # print(f"mask shape: {input_mask.shape}")
+            if network == 'unet-vae' or network == 'rqunet-vae-encoder' or network =='unet':
+                output, _ = dpc_model(input_seq)
 
-            mask_pred, _ = segment_model(features)
+            # print('dpc output type: ',type(output))
 
-            # print(f"mask pred shape: {mask_pred.shape}")
-
-            loss = criterion(mask_pred, input_mask)
-            # losses.update(loss['loss'].item(), B)
-
+            loss = criterion(output, input_mask)
             losses.update(loss.item(), B)
 
-    # return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
-    return losses.local_avg
+    return output, losses.local_avg
 
-
-def predict_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.eval()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['x'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,F,H,W) = features.shape
-        batch = 1
-
-        # features = features.view(B*N,SL,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        mask_pred, _ = segment_model(features)
-
-    return mask_pred
-
-
-def set_path(args):
-    if args.resume: exp_path = os.path.dirname(os.path.dirname(args.resume))
-    else:
-        exp_path = 'log_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
-bs{args.batch_size}_lr{1}_seq{args.num_seq}_pred{args.pred_step}_len{args.seq_len}_ds{args.ds}_\
-train-{args.train_what}{2}'.format(
-                    'r%s' % args.net[6::], \
-                    args.old_lr if args.old_lr is not None else args.lr, \
-                    '_pt=%s' % args.pretrain.replace('/','-') if args.pretrain else '', \
-                    args=args)
-    img_path = os.path.join(exp_path, 'img')
-    model_path = os.path.join(exp_path, 'model')
-    if not os.path.exists(img_path): os.makedirs(img_path)
-    if not os.path.exists(model_path): os.makedirs(model_path)
-    return img_path, model_path
 
 if __name__ == '__main__':
     main()
-
-    # python main.py --gpu 0 --net resnet18 --dataset ucf101 --batch_size 128 --img_dim 128 --epochs 100
+    torch.cuda.empty_cache()

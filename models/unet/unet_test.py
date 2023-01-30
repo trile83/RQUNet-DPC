@@ -163,7 +163,7 @@ class UNet_test(nn.Module):
     """
 
     def __init__(self, num_classes, in_channels=3, segment=True, depth=5, 
-                 start_filts=64, up_mode='upsample', 
+                 start_filts=64, up_mode='upsample', is_encoder=False, 
                  merge_mode='concat'):
         """
         Arguments:
@@ -206,6 +206,8 @@ class UNet_test(nn.Module):
         self.start_filts = start_filts
         self.segment = segment
         self.depth = depth
+        self.is_encoder = is_encoder
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear') 
 
         self.down_convs = []
         self.up_convs = []
@@ -270,12 +272,24 @@ class UNet_test(nn.Module):
         s_dict = {}  
         for i, module in enumerate(self.down_convs):
             x, s = module(x)
-            s_dict[i] = s        
+            s_dict[i] = s
 
-        # Step 2 - Decoder:
-        for i, module in enumerate(self.up_convs):
-            s = s_dict[self.depth-2-i]
-            x = module(s, x)
+        # in case UNet is used as encoder
+        if self.is_encoder:
+            for i, module in enumerate(self.up_convs):
+                s = s_dict[self.depth-2-i]
+                if i == 0: ## if i==0 then concatenate the variation layer (z) instead of original downconv tensor (x), then after the loop, x becomes the upconv tensor
+                    x = s
+                else:
+                    # x = module(s, x)
+                    x = torch.cat((s, self.upsample(x)), 1)
+            return x
+        else:    
+
+            # Step 2 - Decoder:
+            for i, module in enumerate(self.up_convs):
+                s = s_dict[self.depth-2-i]
+                x = module(s, x)
 
         #print(self.down_convs)
         #print(self.up_convs)
@@ -283,9 +297,12 @@ class UNet_test(nn.Module):
         # No softmax is used. This means you need to use
         # nn.CrossEntropyLoss is your training script,
         # as this module includes a softmax already.
-        if self.segment:
-            x = self.conv_final(x)
-        else:
-            x = F.relu(x)
+        # if self.segment:
+        #     x = self.conv_final(x)
+        # else:
+        #     x = F.relu(x)
 
-        return x
+        x = self.conv_final(x)
+        x_recon = F.relu(x)
+
+        return x, x_recon

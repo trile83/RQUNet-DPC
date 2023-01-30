@@ -1,3 +1,5 @@
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
 
@@ -86,6 +88,44 @@ class ConvGRU(nn.Module):
         last_state_list = torch.stack(last_state_list, dim=1)
 
         return layer_output, last_state_list
+
+
+class ConvGRU_1(nn.Module):
+    """GRU with internal convolutional layers for 2D inputs/outputs"""
+
+    def __init__(
+        self, input_size: int, hidden_size: int, kernel_size: int = 3, num_layers: int = 1, dropout: float = 0.1
+    ):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        for i in range(num_layers):
+            self.layers.append(ConvGRUCell(input_size if i == 0 else hidden_size, hidden_size, kernel_size))
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(
+        self, x: torch.Tensor, hidden_state: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        b, t, c, h, w = x.shape
+
+        if hidden_state is None:
+            h0 = [None] * len(self.layers)
+
+        h_ts = []
+
+        for i, layer in enumerate(self.layers):
+            h_t = h0[i]
+            c_ts = []
+            for j in range(t):
+                h_t = self.dropout(layer(x[:, j, ...], h_t))
+                c_ts.append(h_t)
+
+            x = c_ts = torch.stack(c_ts, dim=1)
+            h_ts.append(h_t)
+
+        h_ts = torch.stack(h_ts, dim=0)
+
+        return c_ts, h_ts
 
 
 if __name__ == '__main__':

@@ -62,6 +62,26 @@ def rescale_truncate(image):
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
 
+def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+    """
+    Rescale image [0, 1] per-image or per-channel.
+    Args:
+        image (np.ndarray): array to rescale
+        rescale_type (str): rescaling strategy
+    Returns:
+        rescaled np.ndarray
+    """
+    image = image.astype(np.float32)
+    if rescale_type == 'per-image':
+        image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    elif rescale_type == 'per-channel':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (
+                image[:, :, i] - np.min(image[:, :, i])) / \
+                (np.max(image[:, :, i]) - np.min(image[:, :, i]))
+    else:
+        logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
 
 class satDataset(Dataset):
     'Characterizes a dataset for PyTorch'
@@ -333,8 +353,10 @@ def main():
     temp_ts_set = []
     temp_mask_set = []
     for i in range(len(h_list)):
-        ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
+        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+        for j in range(ts.shape[0]):
+            ts[j] = rescale_image(ts[j])
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
         # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -354,10 +376,10 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
     model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
 
-    unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=13)
+    # unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=13)
+    unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
     # unet_segment = UNet3D(in_channel=5, n_classes=2)
 
     ### RGB
@@ -365,7 +387,7 @@ def main():
     # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_epoch222.pth'
 
     ### 13 bands
-    unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_13band_epoch_192.pth'
+    unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_13band_epoch_156.pth'
 
     ### 13 band padded
     # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'

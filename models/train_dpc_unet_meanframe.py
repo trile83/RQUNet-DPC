@@ -299,8 +299,10 @@ def main():
 
     seq_length = 6
     num_seq = 4
-    input_size = 64 ## 64
+    input_size = 256 ## 32,64,128,256
     total_ts_len = 10 # L
+
+    num_chips = 2
 
     padding_size = 8
     
@@ -325,7 +327,7 @@ def main():
     # for i in range(len(h_list)):
     #     ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
 
-    for i in range(iteration):
+    for i in range(num_chips):
         ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         mask = mask.reshape((mask.shape[1],mask.shape[2]))

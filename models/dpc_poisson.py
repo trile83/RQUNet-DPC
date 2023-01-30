@@ -294,7 +294,7 @@ def get_accuracy(y_pred, y_true):
     f1_score = report['cropland']['f1-score']
     return accuracy, precision, recall, f1_score, iou
 
-def get_data(ts_name_key, iteration=1, specific=True):
+def get_data(ts_name_key, train=True):
     # prepare data
     ### hls data
     filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
@@ -322,14 +322,17 @@ def get_data(ts_name_key, iteration=1, specific=True):
     # h_list =[10,20,30,40,50,70,80,90,100,110]
     # w_list =[15,25,35,45,55,75,85,95,105,115]
 
-    h_list =[10]
-    w_list =[15]
+    h_list_train =[90]
+    w_list_train =[95]
+
+    h_list_test =[10]
+    w_list_test =[15]
 
     temp_ts_set = []
     temp_mask_set = []
-    if specific:
-        for i in range(len(h_list)):
-            ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
+    if train:
+        for i in range(len(h_list_train)):
+            ts, mask = specific_chipper(ts_arr, mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
             ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
             mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
@@ -338,8 +341,8 @@ def get_data(ts_name_key, iteration=1, specific=True):
             temp_ts_set.append(ts)
             temp_mask_set.append(mask)
     else:
-        for i in range(1):
-            ts, mask = specific_chipper(ts_arr, mask_arr, h_list[i], w_list[i], input_size=input_size)
+        for i in range(len(h_list_test)):
+            ts, mask = specific_chipper(ts_arr, mask_arr, h_list_test[i], w_list_test[i], input_size=input_size)
             ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
             mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
@@ -349,7 +352,7 @@ def get_data(ts_name_key, iteration=1, specific=True):
             temp_mask_set.append(mask)
 
     train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
+    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 10 in the time series
     train_mask_set = np.stack(temp_mask_set, axis=0)
 
     print(f"train ts set shape: {train_ts_set.shape}")
@@ -365,7 +368,7 @@ def get_data(ts_name_key, iteration=1, specific=True):
     return new_set, train_mask_set, train_ts_set
 
 
-def get_feature_arr(new_set, train_mask_set,model, unet_segment, optimizer, num_seq, seq_length):
+def get_feature_arr(new_set, train_mask_set, model, unet_segment, optimizer, num_seq, seq_length):
 
     test_set = tsDataset(new_set, train_mask_set)
     # Create data loaders
@@ -455,6 +458,8 @@ def stack_features(feature_arr, label, feats, type='train', train_ind_lst=[], tr
     label = label.reshape((label.shape[0]*label.shape[1]))
     X = np.transpose(X,(1,2,0))
     X = X.reshape((X.shape[0]*X.shape[1],X.shape[2]))
+    # X = X.reshape((-1,3))
+    # print(f'X shape: {X.shape}')
 
     if type == 'train':
         if feats.size == 0:
@@ -462,16 +467,9 @@ def stack_features(feature_arr, label, feats, type='train', train_ind_lst=[], tr
         else:
             pixel_vals = np.vstack((feats,np.float32(X)))
 
-        rate_train_per_class = 0.4
+        rate_train_per_class = 100
         train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
         train_labels = label[train_ind]
-
-        # print(train_ind)
-        # print(train_labels)
-        # print(type(train_ind))
-
-        # train_ind_lst.append(train_ind)
-        # train_labels_lst.append(train_labels)
 
         train_ind_lst = train_ind
         train_labels_lst = train_labels
@@ -533,7 +531,7 @@ def poisson_predict(stacked_features, train_ind, train_labels, input_size = 64):
     
     #Run Poisson learning
     # class_priors = gl.utils.class_priors(label)
-    model = gl.ssl.poisson(W, solver='gradient_descent')
+    model = gl.ssl.poisson(W, solver='conjugate_gradient')
     pred_label = model.fit_predict(train_ind, train_labels)
 
     # accuracy = gl.ssl.ssl_accuracy(pred_label, label, len(train_ind))   
@@ -555,7 +553,7 @@ def main():
     with h5py.File(filename, "r") as f:
         print("Keys: %s" % f.keys())
 
-    ts_name = 'TS05'
+    ts_name = 'TS01'
 
     seq_length = 6
     num_seq = 4
@@ -565,11 +563,12 @@ def main():
     padding_size = 0
 
     num_chips = 1
+    test_size = 1
     
-    new_set, train_mask_set, train_ts_set = get_data('Tappan01', specific=False, iteration=num_chips)
+    new_set, train_mask_set, train_ts_set = get_data('Tappan01', train=True)
     (I,L2,N,SL,C,H,W) = new_set.shape
 
-    new_test_set, test_mask_set, test_ts_set = get_data('Tappan01')
+    new_test_set, test_mask_set, test_ts_set = get_data('Tappan01', train=False)
 
     ### dpc model ###
 
@@ -650,7 +649,7 @@ def main():
 
     i=0
     segment_images=[]
-    for i in range(num_chips+10):
+    for i in range(1+test_size):
         segment_images.append(labels_poisson[i*(input_size*input_size):(i+1)*(input_size*input_size)])
 
     print(f'length of segment images: {len(segment_images)}')
@@ -663,9 +662,12 @@ def main():
             y_pred = segment_images[idx]
             y_pred = y_pred.reshape((input_size,input_size))
             print(f'y pred shape: {y_pred.shape}')
-
-            y_true = test_mask_set[idx-num_chips]
-            x = test_ts_set[idx-num_chips]
+            if idx == 0:
+                y_true = train_mask_set[idx]
+                x = train_ts_set[idx]
+            else:
+                y_true = test_mask_set[idx-1]
+                x = test_ts_set[idx-1]
 
             accuracy, precision, recall, f1_score, iou = get_accuracy(y_pred, y_true)
             writer.writerow([idx, accuracy, precision, recall, f1_score, iou])

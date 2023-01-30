@@ -7,15 +7,13 @@ Created on Wed Mar  2 15:40:37 2022
 
 # runtime environmnet will need pytorch and a list of dependencies in disstl/requirements.txt
 
-import disstl.models as models
 import torch
 import torchvision
-from disstl.datasets.smart.datasets import from_cube
-from disstl.datasets.transforms import ClipBands, MinMaxNormalize
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import exposure
 from unet.unet_vae import UNet_VAE_old
+from unet.unet_test import UNet_test
 import collections
 from typing import Optional
 import torch
@@ -65,6 +63,27 @@ def rescale_truncate(image):
         p2, p98 = np.percentile(image[:,:,band], (2, 98))
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
+
+def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+    """
+    Rescale image [0, 1] per-image or per-channel.
+    Args:
+        image (np.ndarray): array to rescale
+        rescale_type (str): rescaling strategy
+    Returns:
+        rescaled np.ndarray
+    """
+    image = image.astype(np.float32)
+    if rescale_type == 'per-image':
+        image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    elif rescale_type == 'per-channel':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (
+                image[:, :, i] - np.min(image[:, :, i])) / \
+                (np.max(image[:, :, i]) - np.min(image[:, :, i]))
+    else:
+        logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
 
 
 def _flatten_temporal_dim(preds, targets):
@@ -132,7 +151,7 @@ if __name__ == '__main__':
     filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
     with h5py.File(filename, "r") as f:
         print("Keys: %s" % f.keys())
-        ts_arr = f['Tappan01_ts'][()]
+        ts_arr = f['Tappan01_PEV_ts'][()]
         mask_arr = f['Tappan01_mask'][()]
 
     seq_length = 5
@@ -140,16 +159,19 @@ if __name__ == '__main__':
     input_size = 64
 
     # get RGB image
-    ts_arr = ts_arr[:50,1:4,:,:]
-    ts_arr = ts_arr[:50,::-1,:,:]
 
-    mask_arr = mask_arr[:50]
+    # get 10-band HLS
+    ts_arr = ts_arr[:100,1:-2,:,:]
+    # ts_arr = ts_arr[:100,::-1,:,:]
 
+    mask_arr = mask_arr[:100]
 
     print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     print(f'data dict tappan01 mask shape: {mask_arr.shape}')
 
     ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
+    for j in range(ts.shape[0]):
+        ts[j] = rescale_image(ts[j])
     ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
     mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
@@ -160,7 +182,6 @@ if __name__ == '__main__':
     train_dl = DataLoader(test_set, **loader_args)
     val_dl = DataLoader(test_set, **loader_args)
 
-
     EPOCHS= 100
     # LR= 5E-3 # 3E-4
     LR= 1E-3
@@ -168,13 +189,14 @@ if __name__ == '__main__':
     WEIGHT_DECAY= 0
     LOG_INTERVAL= 1 # UNITS: MINIBATCHES
 
-    C = 3
-    NUM_CLASSES = 3 # reconstruction hls
+    C = 10
+    NUM_CLASSES = 10 # reconstruction hls
     dir_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = UNet_VAE_old(num_classes=NUM_CLASSES,segment=False,in_channels=C)
+    # model = UNet_VAE_old(num_classes=NUM_CLASSES, segment=False, in_channels=C)
+    model = UNet_test(num_classes=NUM_CLASSES, segment=False, in_channels=C)
 
     if torch.cuda.is_available():
         model.cuda()
@@ -205,6 +227,7 @@ if __name__ == '__main__':
             y = y.to(cuda, dtype=torch.float32)
 
             output = model(x)
+            # print('prediction shape: ', output[1].shape)
             loss = criterion(output[1], y)
             loss_list.append(loss.item())
             # Zero gradients, perform a backward pass, and update the weights.
@@ -222,7 +245,7 @@ if __name__ == '__main__':
             print(f'Validation Loss Decreased({min_loss:.6f}--->{epoch_loss:.6f}) \t Saving The Model')
             min_loss = epoch_loss
             # Saving State Dict
-            torch.save(model.state_dict(), dir_checkpoint + f'recon_1028_{C}band_unetvae_hls_{epoch}_{min_loss}.pth')
+            torch.save(model.state_dict(), dir_checkpoint + f'recon_0129_{C}band_unetvae_hls_{epoch}_{min_loss}.pth')
 
     # torch.save(model.state_dict(), dir_checkpoint + f'bidirect_seg_BH_R001_conv3d_5band_unetvae_{epoch}_{loss_item}.pth')
 
