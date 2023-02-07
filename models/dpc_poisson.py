@@ -62,6 +62,27 @@ def rescale_truncate(image):
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
 
+def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+    """
+    Rescale image [0, 1] per-image or per-channel.
+    Args:
+        image (np.ndarray): array to rescale
+        rescale_type (str): rescaling strategy
+    Returns:
+        rescaled np.ndarray
+    """
+    image = image.astype(np.float32)
+    if rescale_type == 'per-image':
+        image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    elif rescale_type == 'per-channel':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (
+                image[:, :, i] - np.min(image[:, :, i])) / \
+                (np.max(image[:, :, i]) - np.min(image[:, :, i]))
+    else:
+        logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
+
 
 class satDataset(Dataset):
     'Characterizes a dataset for PyTorch'
@@ -294,7 +315,7 @@ def get_accuracy(y_pred, y_true):
     f1_score = report['cropland']['f1-score']
     return accuracy, precision, recall, f1_score, iou
 
-def get_data(ts_name_key, train=True):
+def get_data(ts_name_key, input_size, train=True):
     # prepare data
     ### hls data
     filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
@@ -305,7 +326,6 @@ def get_data(ts_name_key, train=True):
 
     seq_length = 6
     num_seq = 4
-    input_size = 64 ## 64
     total_ts_len = 10 # L
 
     padding_size = 0
@@ -322,18 +342,22 @@ def get_data(ts_name_key, train=True):
     # h_list =[10,20,30,40,50,70,80,90,100,110]
     # w_list =[15,25,35,45,55,75,85,95,105,115]
 
-    h_list_train =[90]
-    w_list_train =[95]
+    h_list_train =[10]
+    w_list_train =[15]
 
-    h_list_test =[10]
-    w_list_test =[15]
+    h_list_test =[20,30,40,50,70,80,90,100,110]
+    w_list_test =[25,35,45,55,75,85,95,105,115]
 
     temp_ts_set = []
     temp_mask_set = []
     if train:
         for i in range(len(h_list_train)):
-            ts, mask = specific_chipper(ts_arr, mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
+            ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
+            if np.any(ts == -1):
+                continue
             ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+            for j in range(ts.shape[0]):
+                ts[j] = rescale_image(ts[j])
             mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
             ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -341,9 +365,15 @@ def get_data(ts_name_key, train=True):
             temp_ts_set.append(ts)
             temp_mask_set.append(mask)
     else:
-        for i in range(len(h_list_test)):
-            ts, mask = specific_chipper(ts_arr, mask_arr, h_list_test[i], w_list_test[i], input_size=input_size)
+        for i in range(1):
+            ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+        # for i in range(len(h_list_test)):
+        #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr, h_list_test[i], w_list_test[i], input_size=input_size)
+            if np.any(ts == -1):
+                continue
             ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+            for j in range(ts.shape[0]):
+                ts[j] = rescale_image(ts[j])
             mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
             ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -495,7 +525,7 @@ def poisson_segment(feature_arr, ts, label, type='train', input_size = 64):
     X = np.transpose(X,(1,2,0))
     X = X.reshape((X.shape[0]*X.shape[1],X.shape[2])) # (4096x128)
 
-    rate_train_per_class = 0.5
+    rate_train_per_class = 0.6
     train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
     train_labels = label[train_ind]
 
@@ -553,41 +583,43 @@ def main():
     with h5py.File(filename, "r") as f:
         print("Keys: %s" % f.keys())
 
-    ts_name = 'TS01'
+    ts_name_train = 'Tappan01'
+    ts_name_test = 'Tappan05'
 
     seq_length = 6
     num_seq = 4
-    input_size = 64 ## 64
+    input_size = 128 ## 64
     total_ts_len = 10 # L
 
     padding_size = 0
-
-    num_chips = 1
-    test_size = 1
     
-    new_set, train_mask_set, train_ts_set = get_data('Tappan01', train=True)
+    new_set, train_mask_set, train_ts_set = get_data(ts_name_train, input_size, train=True)
     (I,L2,N,SL,C,H,W) = new_set.shape
 
-    new_test_set, test_mask_set, test_ts_set = get_data('Tappan01', train=False)
+    new_test_set, test_mask_set, test_ts_set = get_data(ts_name_test, input_size, train=False)
+
+    num_chips = new_set.shape[0]
+    test_size = new_test_set.shape[0]
 
     ### dpc model ###
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
-    model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0927_13band_unetvae_hls_8_0.00016154855853173791.pth'
+    model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unetvae_hls_128_70_3.3414244578817664e-06.pth'
 
-    model = DPC_RNN_UNet(sample_size=64,
+    model = DPC_RNN_UNet(sample_size=input_size,
                     device=device,
                     num_seq=4, 
                     seq_len=6, 
-                    network='unet-vae',
+                    network='unet',
                     # network="rqunet-vae-encoder",
                     pred_step=1,
                     model_weight=model_checkpoint,
-                    freeze=True)
+                    freeze=True,
+                    segment = False)
 
-    unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
+    unet_segment = UNet_test(num_classes=2,segment=True,in_channels=128)
 
     if torch.cuda.is_available():
         model = model.to(cuda)
@@ -649,12 +681,12 @@ def main():
 
     i=0
     segment_images=[]
-    for i in range(1+test_size):
+    for i in range(num_chips+test_size):
         segment_images.append(labels_poisson[i*(input_size*input_size):(i+1)*(input_size*input_size)])
 
     print(f'length of segment images: {len(segment_images)}')
 
-    with open(f'{data_dir}{ts_name}_poisson_stat_results.csv','w') as f1:
+    with open(f'{data_dir}{ts_name_test}_poisson_stat_results.csv','w') as f1:
         writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
         writer.writerow(['id','accuracy','precision','recall','f1-score','mIoU'])
         for idx in range(0,len(segment_images)):
@@ -688,7 +720,10 @@ def main():
             plt.title(f"Segmentation Prediction")
             image = np.transpose(y_pred[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
             plt.imshow(image)
-            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-poisson.png")
+            if idx == 0:
+                plt.savefig(f"{str(data_dir)}{ts_name_train}-{str(idx)}-train-poisson.png")
+            else:
+                plt.savefig(f"{str(data_dir)}{ts_name_test}-{str(idx)}-test-poisson.png")
             plt.close()
 
     # with open(f'{data_dir}{ts_name}_poisson_stat_results_train.csv','w') as f1:

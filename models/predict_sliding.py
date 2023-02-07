@@ -270,15 +270,23 @@ def main():
 
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as file:
-        # print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan01_PEV_ts'][()]
-        mask_arr = file['Tappan01_mask'][()]
+    hls=False
+    if not hls:
+        filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+        with h5py.File(filename, "r") as file:
+            print("Keys: %s" % file.keys())
+            ts_arr = file['Tappan01_PEV_ts'][()]
+            mask_arr = file['Tappan01_mask'][()]
+    else:
+        filename = "/home/geoint/tri/hls_ts_video/hls_data_all.hdf5"
+        with h5py.File(filename, "r") as file:
+            print("Keys: %s" % file.keys())
+            ts_arr = file['PEV_2022_ts'][()]
+            mask_arr = file['PEV_2022_ts'][()]
 
-    ts_name = 'TS01'
-    #### tappan 04, 06, and tapp 17 has several begining frames in time series black or small partial area in the images
+        ts_arr = np.transpose(ts_arr, (0,3,1,2))
 
+    ts_name = 'PEV_2022'
     # get RGB image
     # ts_arr = ts_arr[:,1:4,:,:]
     # ts_arr = ts_arr[:,::-1,:,:]
@@ -295,7 +303,7 @@ def main():
 
     ## get different chips in the Tappan Square for multiple time series
 
-    train_ts_set = ts_arr[:10]
+    train_ts_set = ts_arr[:10,1:-2,:,:]
     (T,C,H,W) = train_ts_set.shape
     # train_ts_set = train_ts_set.reshape((1,T,C,H,W))
     train_mask_set = mask_arr
@@ -322,105 +330,123 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # encoder_weights = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
-    encoder_weights = '/home/geoint/tri/dpc/models/checkpoints/recon_0927_13band_unetvae_hls_8_0.00016154855853173791.pth'
+    unet_option = 'dpc-unet'
 
-    model = DPC_RNN_UNet(sample_size=32,
-                    device=device,
-                    num_seq=4, 
-                    seq_len=6, 
-                    # network="rqunet-vae-encoder",
-                    network ="unet-vae",
-                    pred_step=1,
-                    model_weight=encoder_weights,
-                    freeze=True)
+    if unet_option == 'unet':
+        model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+        unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
 
-    model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+        ### 10 bands
+        unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_1train_9band_epoch_155.pth'
+        if torch.cuda.is_available():
+            unet_segment = unet_segment.to(cuda)
 
-    unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
-    # unet_segment = UNet3D(in_channel=5, n_classes=2)
+        unet_segment.load_state_dict(torch.load(unetsegment_checkpoint)['state_dict'])
 
-    ### RGB
-    # dpc_checkpoint = f'{str(model_dir)}rq_dpc_epoch222.pth'
-    # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_epoch222.pth'
-
-    ### 13 bands
-    dpc_checkpoint = f'{str(model_dir)}dpc_control_13band_epoch103.pth'
-    unetsegment_checkpoint = f'{str(model_dir)}unetsegment_control_13band_epoch_103.pth'
-
-    ### 13 band padded
-    # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'
-    # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_pad_13band_epoch_188.pth'
-
-    # model = nn.DataParallel(model)
-
-    if torch.cuda.is_available():
-        model = model.to(cuda)
-        unet_segment = unet_segment.to(cuda)
-
-    model.load_state_dict(torch.load(dpc_checkpoint)['state_dict'])
-    unet_segment.load_state_dict(torch.load(unetsegment_checkpoint)['state_dict'])
-
-    ### restart training ###
-    ### load data ###
-
-    print("Start prediction!")
-
-    # setup tools
-    global de_normalize; de_normalize = denorm()
-    
-    ### main loop ###
-    print("Start segmentation!")
-
-    ## visualize
-
-    data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
-    
-
-    # Transpose the image for channel last format
-    # image = np.transpose(image, (1,2,0))
-
-    # Remove no-data values to account for edge effects
-    # temporary_tif = image.values
-    # temporary_tif = xr.where(image > -100, image, 600)
-
-    # Rescale the image
-    # temporary_tif = temporary_tif
-
-    prediction = inference.sliding_window_tiler(
+        prediction = inference.sliding_window_tiler(
         xraster=train_ts_set,
-        dpc_model=model,
         model=unet_segment,
         n_classes=2,
         overlap=0.5,
-        batch_size=4,
+        batch_size=128,
         standardization='local',
         mean=0,
         std=0,
         normalize=10000.0,
-        rescale=None
+        rescale=None,
+        model_option = unet_option
     )
+
+    elif unet_option == 'dpc-unet':
+
+        network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
+
+        encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unetvae_hls_98_2.7315708488893155e-06.pth'
+
+        model = DPC_RNN_UNet(sample_size=input_size,
+                        device=device,
+                        num_seq=4, 
+                        seq_len=6, 
+                        network=network,
+                        pred_step=1,
+                        model_weight=encoder_weight,
+                        freeze=True)
+
+        model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+
+        ### 13 bands
+        model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
+
+        model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
+
+        # model = nn.DataParallel(model)
+
+        if torch.cuda.is_available():
+            model = model.to(cuda)
+
+        ### restart training ###
+        ### load data ###
+
+        print("Start prediction!")
+
+        # setup tools
+        global de_normalize; de_normalize = denorm()
+        
+        ### main loop ###
+        print("Start segmentation!")
+
+        ## visualize
+        
+
+        # Transpose the image for channel last format
+        # image = np.transpose(image, (1,2,0))
+
+        # Remove no-data values to account for edge effects
+        # temporary_tif = image.values
+        # temporary_tif = xr.where(image > -100, image, 600)
+
+        # Rescale the image
+        # temporary_tif = temporary_tif
+
+        prediction = inference.sliding_window_tiler(
+            xraster=train_ts_set,
+            model=model,
+            n_classes=2,
+            overlap=0.5,
+            batch_size=4,
+            standardization='local',
+            mean=0,
+            std=0,
+            normalize=10000.0,
+            rescale=None,
+            model_option=unet_option
+        )
 
     # prediction = torch.argmax(prediction, dim=1)
 
+    data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
+
+    prediction = np.argmax(prediction, axis=0)
+
     plt.figure(figsize=(20,20))
     # plt.subplot(1,3,1)
-    plt.title("Image")
-    image = np.transpose(train_ts_set[0,5,1:4,:,:], (1,2,0))
-    # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-    plt.imshow(rescale_truncate(image))
-    plt.savefig(f"{str(data_dir)}{ts_name}-input.png")
+    # plt.title("Image")
+    # image = np.transpose(train_ts_set[0,:3,:,:], (1,2,0))
+    # # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+    # plt.imshow(rescale_truncate(image))
+    # # plt.savefig(f"{str(data_dir)}{ts_name}-input.png")
     # plt.subplot(1,3,2)
-    plt.title("Segmentation Label")
-    image = np.transpose(train_mask_set[0,:,:], (0,1))
-    plt.imshow(image)
-    plt.savefig(f"{str(data_dir)}{ts_name}-label.png")
+    # plt.title("Segmentation Label")
+    # # image = np.transpose(train_mask_set[:,:], (0,1))
+    # image = train_mask_set
+    # plt.imshow(image)
+    # # plt.savefig(f"{str(data_dir)}{ts_name}-label.png")
 
     # plt.subplot(1,3,3)
-    plt.title(f"Segmentation w accuracy")
-    image = np.transpose(prediction[0,:,:].cpu().numpy(), (0,1))
+    plt.title(f"Segmentation Prediction")
+    image = prediction
     plt.imshow(image)
-    plt.savefig(f"{str(data_dir)}{ts_name}-unet.png")
+    plt.savefig(f"{str(data_dir)}{ts_name}-unet-full-dpc.png")
 
     plt.close()
 

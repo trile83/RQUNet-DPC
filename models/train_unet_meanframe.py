@@ -333,17 +333,20 @@ def main():
     ## get different chips in the Tappan Square for multiple time series
     num_chips = 11 # I
     num_val=1
-    h_list =[10,20,30,40,50,70,80,90,100,110]
-    w_list =[15,25,35,45,55,75,85,95,105,115]
+
+    h_list_train =[10,20]
+    w_list_train =[15,25]
+    h_list =[10,20,30,40,50,70,80,90,100,110,200]
+    w_list =[15,25,35,45,55,75,85,95,105,115,215]
 
     temp_ts_set = []
     temp_mask_set = []
 
-    # for i in range(len(h_list)):
-    #     ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
+    for i in range(len(h_list_train)):
+        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
 
-    for i in range(num_chips+num_val):
-        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+    # for i in range(num_chips+num_val):
+    #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         for j in range(ts.shape[0]):
             ts[j] = rescale_image(ts[j])
@@ -403,7 +406,7 @@ def main():
     # params = model.parameters()
     # optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
 
-    segment_optimizer = optim.Adam(unet_segment.parameters(), lr=0.0001, weight_decay=0.000)
+    segment_optimizer = optim.Adam(unet_segment.parameters(), lr=0.001, weight_decay=0.0001)
     args.old_lr = None
 
     ### restart training ###
@@ -483,7 +486,7 @@ def main():
                             'state_dict': unet_segment.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_13band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_1train_9band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
 
     plt.plot(train_loss_lst, color ="blue")
     plt.plot(val_loss_lst, color = "red")

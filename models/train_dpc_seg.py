@@ -341,18 +341,21 @@ def main():
     # h_list =[10,20,30,40,50,70,80,90,100,110]
     # w_list =[15,25,35,45,55,75,85,95,105,115]
 
-
-    temp_ts_set = []
-    temp_mask_set = []
-    # for i in range(len(h_list)):
-    #     ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
+    h_list_train =[10,20]
+    w_list_train =[15,25]
 
     num_val = 1
     num_chips = 10+num_val
 
-    for i in range(num_chips):
-        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-        if np.any(ts == -10000):
+    temp_ts_set = []
+    temp_mask_set = []
+    for i in range(len(h_list_train)):
+        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], \
+            input_size=input_size)
+
+    # for i in range(num_chips):
+    #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+        if np.any(ts == -1):
             continue
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         for j in range(ts.shape[0]):
@@ -524,7 +527,7 @@ def main():
                                     'state_dict': model.state_dict(),
                                     'min_loss': min_loss,
                                     'optimizer': optimizer.state_dict()}, 
-                                    is_best, filename=os.path.join(model_dir, 'dpc-unet_9band_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                    is_best, filename=os.path.join(model_dir, 'dpc-unet_9band_ts01-train1_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)

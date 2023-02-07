@@ -371,7 +371,7 @@ def main():
 
     # for i in range(num_chips):
     #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-        if np.any(ts == -10000):
+        if np.any(ts == -1):
             continue
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         for j in range(ts.shape[0]):
@@ -433,7 +433,7 @@ def main():
     model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
 
     ### 13 bands
-    model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
+    model_checkpoint = f'{str(model_dir)}dpc-unet_9band_ts01-train1_epoch31.pth'
 
     model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
@@ -468,7 +468,7 @@ def main():
 
     batch_size = 1
 
-    with open(f'{data_dir}{ts_name}_unet_stat_results.csv','w') as f1:
+    with open(f'{data_dir}{ts_name}_dpc-unet-seg_stat_results.csv','w') as f1:
         writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
         writer.writerow(['id','frame','accuracy','precision','recall','f1-score','mIoU'])
 

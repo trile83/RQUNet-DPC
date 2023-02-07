@@ -4,18 +4,56 @@ import numpy as np
 import scipy.signal.windows as w
 from tqdm import tqdm
 # from .tiler.tiler import Tiler, Merger
-from .mosaic import from_array
+# from .mosaic import from_array
 from .data import normalize_image, rescale_image, \
     standardize_batch, standardize_image
 from tiler import Tiler, Merger
 import torch
 from einops import rearrange
 from torch.utils.data import Dataset, DataLoader
+from utils.utils import AverageMeter
 
 
 def window2d(window_func, window_size, **kwargs):
     window = np.matrix(window_func(M=window_size, sym=False, **kwargs))
     return window.T.dot(window)
+
+def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+    """
+    Rescale image [0, 1] per-image or per-channel.
+    Args:
+        image (np.ndarray): array to rescale
+        rescale_type (str): rescaling strategy
+    Returns:
+        rescaled np.ndarray
+    """
+    image = image.astype(np.float32)
+    if rescale_type == 'per-image':
+        image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    elif rescale_type == 'per-channel':
+        for i in range(image.shape[0]):
+            image[i, :, :] = (
+                image[i, :, :] - np.min(image[i, :, :])) / \
+                (np.max(image[i, :, :]) - np.min(image[i, :, :]))
+    else:
+        logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
+
+def predict_dpc(data_loader, dpc_model):
+
+    dpc_model.eval()
+    global iteration
+
+    with torch.no_grad():
+        for idx, input in enumerate(data_loader):
+
+            input_seq = input["x"]
+            input_seq = input_seq.to(cuda, dtype=torch.float32)
+            output = dpc_model(input_seq)
+
+            # print('dpc output type: ',type(output))
+
+    return output
 
 
 def generate_corner_windows(window_func, window_size, **kwargs):
@@ -117,10 +155,9 @@ def generate_patch_list(
 
 class satDataset(Dataset):
     'Characterizes a dataset for PyTorch'
-    def __init__(self, X, Y):
+    def __init__(self, X):
         'Initialization'
         self.data = X
-        self.mask = Y
 
     def __len__(self):
         'Denotes the total number of samples'
@@ -130,11 +167,9 @@ class satDataset(Dataset):
         'Generates one sample of data'
         # Select sample
         X = self.data[index]
-        Y = self.mask
 
         return {
-            'x': X,
-            'mask': X
+            'x': X
         }
 
 def get_seq(sequence, seq_length):
@@ -233,7 +268,6 @@ def predict_dpc(data_loader, dpc_model):
     
 def sliding_window_tiler(
             xraster,
-            dpc_model,
             model,
             n_classes: int,
             pad_style: str = 'reflect',
@@ -242,11 +276,13 @@ def sliding_window_tiler(
             batch_size: int = 1024,
             threshold: float = 0.50,
             standardization: str = None,
+            dpc_model=None,
             mean=None,
             std=None,
             window: str = 'triang',  # 'overlap-tile',
             normalize=10000.0,
-            rescale=None
+            rescale=None,
+            model_option='unet'
         ):
     """
     Sliding window using tiler.
@@ -263,36 +299,55 @@ def sliding_window_tiler(
     # tile_channels = model.layers[0].input_shape[0][-1]
 
     tile_size = 64
-    tile_channels = 13
+    tile_channels = 10
     seq_length = 5
     num_seq = 4
     global cuda; cuda = torch.device('cuda')
     # n_classes = out of the output layer, output_shape
 
-    tiler_image = Tiler(
-        # data_shape=xraster.shape,
-        data_shape=(xraster.shape[0], xraster.shape[1], xraster.shape[2], xraster.shape[3]),
-        # tile_shape=(tile_size, tile_size, tile_channels),
-        tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
-        # channel_dimension=-1,
-        channel_dimension=1,
-        overlap=overlap,
-        mode=pad_style,
-        constant_value=constant_value
-    )
+    if model_option == 'unet':
+        
+        xraster = xraster.mean(axis=0)
 
-    # Define the tiler and merger based on the output size of the prediction
-    tiler_mask = Tiler(
-        # data_shape=(xraster.shape[0], xraster.shape[1], n_classes),
-        data_shape=(n_classes, xraster.shape[2], xraster.shape[3]),
-        # tile_shape=(tile_size, tile_size, n_classes),
-        tile_shape=(n_classes, tile_size, tile_size),
-        # channel_dimension=-1,
-        channel_dimension=0,
-        overlap=overlap,
-        mode=pad_style,
-        constant_value=constant_value
-    )
+        tiler_image = Tiler(
+            data_shape=xraster.shape,
+            tile_shape=(tile_channels, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+        # Define the tiler and merger based on the output size of the prediction
+        tiler_mask = Tiler(
+            data_shape=(n_classes, xraster.shape[1], xraster.shape[2]),
+            tile_shape=(n_classes, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+    elif model_option == 'dpc-unet':
+
+        tiler_image = Tiler(
+            data_shape=(xraster.shape[0], xraster.shape[1], xraster.shape[2], xraster.shape[3]),
+            tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
+            channel_dimension=1,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+        # Define the tiler and merger based on the output size of the prediction
+        tiler_mask = Tiler(
+            data_shape=(n_classes, xraster.shape[2], xraster.shape[3]),
+            tile_shape=(n_classes, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
 
     # new_shape_image, padding_image = tiler_image.calculate_padding()
     # new_shape_mask, padding_mask = tiler_mask.calculate_padding()
@@ -314,142 +369,89 @@ def sliding_window_tiler(
     # print("After pad", xraster.shape)
 
     # Iterate over the data in batches
-    for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
+    if model_option == 'dpc-unet':
+        for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
-        # print("AFTER SELECT", batch.shape)
+            for j in range(batch.shape[0]):
+                batch[j] = rescale_image(batch[j])
 
-        # Standardize
-        batch = batch / normalize
+            # Standardize
+            # batch = batch / normalize
 
-        # if standardization is not None:
-        #    batch = standardize_batch(batch, standardization, mean, std)
+            # if standardization is not None:
+            #    batch = standardize_batch(batch, standardization, mean, std)
 
-        # print("AFTER STD", batch.shape)
+            # print("AFTER STD", batch.shape)
 
-        # DPC:
-        im_set = get_seq(batch, seq_length)
-        new_set = get_chunks(im_set, num_seq)
-        # new_set = torch.Tensor(new_set).to(cuda, dtype=torch.float32)
-        print('new_set shape: ', new_set.shape)
+            # DPC:
+            im_set = get_seq(batch, seq_length)
+            new_set = get_chunks(im_set, num_seq)
+            # new_set = torch.Tensor(new_set).to(cuda, dtype=torch.float32)
+            print('new_set shape: ', new_set.shape)
 
-        (I,L2,N,SL,C,H,W) = new_set.shape
+            (I,L2,N,SL,C,H,W) = new_set.shape
 
-        new_set = rearrange(new_set, "b l2 n sl c h w -> (b l2) n sl c h w")
+            new_set = rearrange(new_set, "b l2 n sl c h w -> (b l2) n sl c h w")
 
-        test_set = satDataset(new_set, new_set)
-        loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
-        train_sat_dl = DataLoader(test_set, **loader_args_sat)
+            train_set = satDataset(new_set)
 
-        # features = run_dpc(dpc_model, new_set)
-        features = predict_dpc(train_sat_dl, dpc_model)
-        features = rearrange(features, "(b l2) n sl c h w -> b l2 n sl c h w", l2 = L2)
+            loader_args_sat = dict(batch_size=4, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
+            train_sat_dl = DataLoader(train_set, **loader_args_sat)
 
-        r_features = reverse_chunks(features, num_seq)
-        o_features = reverse_seq(r_features, seq_length)
+            output = predict_dpc(train_sat_dl, model)
+            
+            # batch = np.moveaxis(batch, -1, 1)
+            # print("AFTER PREDICT", batch.shape, batch_id)
 
-        o_features = torch.Tensor(o_features).to(cuda, dtype=torch.float32)
-        print('o_features shape: ', o_features.shape)
+            # Merge the updated data in the array
+            merger.add_batch(batch_id, batch_size, output.detach().cpu().numpy())
 
-        x = o_features
+    elif model_option == 'unet':
 
-        (B,L,F,H,W) = x.shape
+        for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
-        x = x.view(B*L,F,H,W)
-        batch_size = 1
+            # print("AFTER SELECT", batch.shape)
 
-        x_mean = x.mean(dim=0)
-        x_mean = x_mean.view(batch_size,F,H,W)
+            # Standardize
+            # batch = batch / normalize
+            batch = rescale_image(batch)
 
-        # Predict
-        # batch = model.predict(batch, batch_size=batch_size)
-        batch = model(x_mean)[0]
-        # batch = np.moveaxis(batch, -1, 1)
-        # print("AFTER PREDICT", batch.shape, batch_id)
+            # if standardization is not None:
+            #    batch = standardize_batch(batch, standardization, mean, std)
 
-        # Merge the updated data in the array
-        merger.add_batch(batch_id, batch_size, batch)
+            # print("AFTER STD", batch.shape)
+
+            batch = torch.Tensor(batch).to(cuda, dtype=torch.float32)
+            # print('batch tensor shape: ', batch.shape)
+
+            x = batch
+
+            # Predict
+            # batch = model.predict(batch, batch_size=batch_size)
+            batch = model(x)[0]
+            # batch = np.moveaxis(batch, -1, 1)
+            # print("AFTER PREDICT", batch.shape, batch_id)
+
+            # Merge the updated data in the array
+            merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
 
     # prediction = merger.merge(
     # extra_padding=padding_mask, unpad=True, dtype=xraster.dtype,
     # normalize_by_weights=False)
     prediction = merger.merge(unpad=True)
 
-    prediction = np.transpose(prediction, (1,2,0))
+    print('prediction shape: ', prediction.shape)
 
-    if prediction.shape[-1] > 1:
-        prediction = np.argmax(prediction, axis=-1)
-    else:
-        prediction = np.squeeze(
-            np.where(prediction > threshold, 1, 0).astype(np.int16)
-        )
+    # prediction = np.transpose(prediction, (1,2,0))
 
-    """
-    tiler1 = Tiler(
-        data_shape=xraster.shape,
-        tile_shape=(tile_size, tile_size, tile_channels),
-        channel_dimension=2,
-        overlap=0.50,
-        #mode=pad_style,
-        #constant_value=constant_value
-    )
+    # if prediction.shape[-1] > 1:
+    #     prediction = np.argmax(prediction, axis=-1)
+    # else:
+    #     prediction = np.squeeze(
+    #         np.where(prediction > threshold, 1, 0).astype(np.int16)
+    #     )
 
-    tiler2 = Tiler(
-        data_shape=xraster.shape,
-        tile_shape=(tile_size, tile_size, n_classes),
-        channel_dimension=2,
-        overlap=(256, 256, 0),
-        #mode=pad_style,
-        #constant_value=constant_value
-    )
-
-    new_shape, padding = tiler1.calculate_padding()
-    tiler1.recalculate(data_shape=new_shape)
-    tiler2.recalculate(data_shape=new_shape)
-    padded_image = np.pad(
-        xraster.values, padding, mode=pad_style,
-        constant_values=constant_value
-    )
-
-    merger = Merger(tiler=tiler2, window="overlap-tile")
-    #merger = Merger(tiler=tiler2, logits=2)#, window="triang")
-    #"hann")#"triang")#"barthann")#"overlap-tile")
-
-    for batch_id, batch in tiler1(padded_image, batch_size=batch_size):
-    #for batch_id, batch in tiler1(xraster, batch_size=batch_size):
-
-        # remove no-data
-        batch[batch < 0] = constant_value
-
-        # Standardize
-        if standardization is not None:
-            print("STD")
-            batch = standardize_batch(batch, standardization, mean, std)
-
-        # preprocessing
-        batch = model.predict(batch, batch_size=batch_size)
-
-        batch = np.argmax(batch, axis=-1)
-
-        # merge batch
-        merger.add_batch(batch_id, batch_size, batch)
-
-    #prediction = merger.merge(extra_padding=padding, dtype=xraster.dtype)
-    # prediction = merger.merge(
-    #    extra_padding=padding, dtype=xraster.dtype,
-    # normalize_by_weights=False)
-    #prediction = merger.merge(unpad=True)
-    prediction = merger.merge(extra_padding=padding, dtype=padded_image.dtype)
-
-    if prediction.shape[-1] > 1:
-        prediction = np.argmax(prediction, axis=-1)
-    else:
-        prediction = np.squeeze(
-            np.where(prediction > threshold, 1, 0).astype(np.int16)
-        )
-
-    logging.info(f"Mask info: {prediction.shape}, {prediction.min()},
-    {prediction.max()}")
-    """
+    
     return prediction
 
 

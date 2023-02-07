@@ -57,7 +57,7 @@ def rescale_truncate(image):
         image = np.where(image > 1,1,image) 
 
     map_img =  np.zeros(image.shape)
-    for band in range(3):
+    for band in range(image.shape[2]):
         p2, p98 = np.percentile(image[:,:,band], (2, 98))
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
@@ -316,13 +316,27 @@ def main():
 
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as file:
-        print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan05_PEV_ts'][()]
-        mask_arr = file['Tappan05_mask'][()]
+    hls=True
+    if not hls:
+        filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+        with h5py.File(filename, "r") as file:
+            print("Keys: %s" % file.keys())
+            ts_arr = file['Tappan05_PEV_ts'][()]
+            mask_arr = file['Tappan05_mask'][()]
+    else:
+        filename = "/home/geoint/tri/hls_ts_video/hls_data_all.hdf5"
+        with h5py.File(filename, "r") as file:
+            print("Keys: %s" % file.keys())
+            ts_arr = file['PEV_2022_ts'][()]
+            mask_arr = file['PEV_2022_ts'][()]
 
-    ts_name = 'TS05'
+        ts_arr = np.transpose(ts_arr, (0,3,1,2))
+        mask_arr = np.transpose(mask_arr, (0,3,1,2))
+        mask_arr = mask_arr[0,0,:,:]
+
+        # print(ts_arr.shape)
+
+    ts_name = 'PEV_2022'
     #### tappan 04, 06, and tapp 17 has several begining frames in time series black or small partial area in the images
 
     # get RGB image
@@ -352,11 +366,32 @@ def main():
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(len(h_list)):
-        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
+    for i in range(20):
+        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+    # for i in range(len(h_list)):
+    #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-        for j in range(ts.shape[0]):
-            ts[j] = rescale_image(ts[j])
+        
+        if not hls:
+            if np.any(ts == -1): # avoid no data region in image
+                continue
+
+            for j in range(ts.shape[0]):
+                ts[j] = rescale_image(ts[j])
+        else:
+            if np.any(ts == -9999): # avoid no data region in image
+                continue
+        
+            image = np.transpose(ts[0], (1,2,0))
+            image = rescale_image(image)
+            image = rescale_truncate(image)
+            plt.imshow(image[:,:,1:4])
+            plt.savefig(f'/home/geoint/tri/dpc_test_out/test_img_vscode_{i}.png')
+            plt.close()
+
+            # for j in range(ts.shape[0]):
+            #     ts[j] = rescale_image(ts[j])
+
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
         # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -387,7 +422,7 @@ def main():
     # unetsegment_checkpoint = f'{str(model_dir)}unetsegment_epoch222.pth'
 
     ### 13 bands
-    unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_13band_epoch_156.pth'
+    unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_1train_9band_epoch_155.pth'
 
     ### 13 band padded
     # dpc_checkpoint = f'{str(model_dir)}dpc_pad_13band_epoch188.pth'
@@ -451,7 +486,7 @@ def main():
 
             # print(f"im shape: {x.shape}")
             # print(f"y shape: {y.shape}")
-            x_ori = x
+            x_ori = batch['ts'].numpy()
 
             (B,L,F,H,W) = x.shape
 
@@ -488,33 +523,49 @@ def main():
             index_array = torch.argmax(y_pred, dim=1)
             # print(f"index array shape: {index_array.shape}")
 
-            frame=5
+            frame=4
 
             # for frame in range(x_ori.shape[1]):
+            if not hls:
+                accuracy, precision, recall, f1_score, iou = get_accuracy(index_array.cpu().numpy(), y)
+                writer.writerow([idx, frame, accuracy, precision, recall, f1_score, iou])
 
-            accuracy, precision, recall, f1_score, iou = get_accuracy(index_array.cpu().numpy(), y)
-            writer.writerow([idx, frame, accuracy, precision, recall, f1_score, iou])
+                plt.figure(figsize=(20,20))
+                plt.subplot(1,3,1)
+                plt.title("Image")
+                image = np.transpose(x_ori[0,frame,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
+                # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+                plt.imshow(rescale_truncate(image))
+                # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
+                plt.subplot(1,3,2)
+                plt.title("Segmentation Label")
+                image = np.transpose(y[0,padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
+                plt.imshow(image)
+                # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
+            
+                plt.subplot(1,3,3)
+                plt.title(f"Segmentation Prediction")
+                image = np.transpose(index_array[0,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (0,1))
+                plt.imshow(image)
+                plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-{str(frame)}-unet-pred.png")
 
-            plt.figure(figsize=(20,20))
-            plt.subplot(1,3,1)
-            plt.title("Image")
-            image = np.transpose(x_ori[0,frame,1:4,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (1,2,0))
-            # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-            plt.imshow(rescale_truncate(image))
-            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
-            plt.subplot(1,3,2)
-            plt.title("Segmentation Label")
-            image = np.transpose(y[0,padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
-            plt.imshow(image)
-            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
-        
-            plt.subplot(1,3,3)
-            plt.title(f"Segmentation w accuracy {accuracy}")
-            image = np.transpose(index_array[0,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (0,1))
-            plt.imshow(image)
-            plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-{str(frame)}-unet-pred.png")
+                plt.close()
+            
+            else:
+                plt.figure(figsize=(20,20))
+                plt.subplot(1,2,1)
+                plt.title("Image")
+                image = x_ori[0,frame,:,:,:]
+                image = np.transpose(image, (1,2,0))
+                image = rescale_image(image)
+                plt.imshow(rescale_truncate(image[:,:,1:4]))
+                plt.subplot(1,2,2)
+                plt.title(f"Segmentation Prediction")
+                image = np.transpose(index_array[0,padding_size:H-padding_size,padding_size:W-padding_size].cpu().numpy(), (0,1))
+                plt.imshow(image)
+                plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-{str(frame)}-unet-pred.png")
 
-            plt.close()
+                plt.close()
 
 
 def predict_dpc(data_loader, dpc_model):

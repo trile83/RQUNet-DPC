@@ -156,7 +156,7 @@ if __name__ == '__main__':
 
     seq_length = 5
     num_seq = 4
-    input_size = 64
+    input_size = 128
 
     # get RGB image
 
@@ -245,7 +245,7 @@ if __name__ == '__main__':
             print(f'Validation Loss Decreased({min_loss:.6f}--->{epoch_loss:.6f}) \t Saving The Model')
             min_loss = epoch_loss
             # Saving State Dict
-            torch.save(model.state_dict(), dir_checkpoint + f'recon_0129_{C}band_unetvae_hls_{epoch}_{min_loss}.pth')
+            torch.save(model.state_dict(), dir_checkpoint + f'recon_0129_{C}band_unetvae_hls_128_{epoch}_{min_loss}.pth')
 
     # torch.save(model.state_dict(), dir_checkpoint + f'bidirect_seg_BH_R001_conv3d_5band_unetvae_{epoch}_{loss_item}.pth')
 
