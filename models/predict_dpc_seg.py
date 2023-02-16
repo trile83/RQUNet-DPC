@@ -332,23 +332,39 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as file:
-        # print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan05_PEV_ts'][()]
-        mask_arr = file['Tappan05_mask'][()]
+    # prepare data
+    ### hls data
+    hls=False
+    if not hls:
+        filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
 
-    ts_name = 'TS05'
+        ts_name = 'Tappan05'
+        with h5py.File(filename, "r") as file:
+            print("Keys: %s" % file.keys())
+            ts_arr = file['Tappan05_PEV_ts'][()]
+            mask_arr = file['Tappan05_mask'][()]
+    else:
+        filename = "/home/geoint/tri/hls_ts_video/hls_data_all.hdf5"
+
+        ts_name = 'PEV_2021'
+        with h5py.File(filename, "r") as file:
+            print("Keys: %s" % file.keys())
+            ts_arr = file['PEV_2021_ts'][()]
+
+        ts_arr = np.transpose(ts_arr, (0,3,1,2))
+        mask_arr = ts_arr[0,0,:,:]
+
+        # print(ts_arr.shape)
 
     seq_length = 6
     num_seq = 4
     input_size = 64 ## 64
-    total_ts_len = 12 # L
+    total_ts_len = 10 # L
 
     padding_size = 8
     
-    # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
-    # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
+    print(f'data dict tappan01 ts shape: {ts_arr.shape}')
+    print(f'data dict tappan01 mask shape: {mask_arr.shape}')
 
     train_ts_set = []
     train_mask_set = []
@@ -366,16 +382,27 @@ def main():
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(len(h_list)):
-        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
+    # for i in range(len(h_list)):
+    #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
 
-    # for i in range(num_chips):
-    #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-        if np.any(ts == -1):
-            continue
+    for i in range(num_chips):
+        ts, mask = chipper(ts_arr[:total_ts_len,1:-2,:,:], mask_arr, input_size=input_size)
+
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-        for j in range(ts.shape[0]):
-            ts[j] = rescale_image(ts[j])
+        if not hls:
+            if np.any(ts == -1): # avoid no data region in image
+                continue
+
+            # for j in range(ts.shape[0]):
+            #     ts[j] = rescale_image(ts[j])
+
+            ts = rescale_image(ts)
+        else:
+            if np.any(ts == -9999): # avoid no data region in image
+                continue
+
+            ts = rescale_image(ts)
+
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
         # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -383,13 +410,11 @@ def main():
         temp_ts_set.append(ts)
         temp_mask_set.append(mask)
 
-    ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = ts_set[:,:total_ts_len] # get the first 100 in the time series
+    train_ts_set = np.stack(temp_ts_set, axis=0)
+    # train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
     mask_set = np.stack(temp_mask_set, axis=0)
     train_mask_set = mask_set[:]
 
-    del ts_set
-    del mask_set
 
     print(f"train ts set shape: {train_ts_set.shape}")
     print(f"train mask set shape: {train_mask_set.shape}")
@@ -501,14 +526,14 @@ def main():
             z = ori_ts.numpy()
             y = input_mask
 
-            accuracy, precision, recall, f1_score, iou = get_accuracy(index_array.cpu().numpy(), y)
-            writer.writerow([idx, frame, accuracy, precision, recall, f1_score, iou])
-
+            # accuracy, precision, recall, f1_score, iou = get_accuracy(index_array.cpu().numpy(), y)
+            # writer.writerow([idx, frame, accuracy, precision, recall, f1_score, iou])
 
             plt.figure(figsize=(20,20))
             plt.subplot(1,3,1)
             plt.title("Image")
             image = np.transpose(z[0,frame,1:4,:,:], (1,2,0))
+            image = rescale_image(image)
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             image = rescale_truncate(image)
             plt.imshow(image)
@@ -551,8 +576,8 @@ def predict_dpc(data_loader, dpc_model, network):
 
             # print('dpc output type: ',type(output))
 
-            loss = criterion(output, input_mask)
-            losses.update(loss.item(), B)
+            # loss = criterion(output, input_mask)
+            # losses.update(loss.item(), B)
 
     return output, losses.local_avg
 

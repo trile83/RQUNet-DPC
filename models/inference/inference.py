@@ -12,6 +12,8 @@ import torch
 from einops import rearrange
 from torch.utils.data import Dataset, DataLoader
 from utils.utils import AverageMeter
+import matplotlib.pyplot as plt
+from skimage import exposure
 
 
 def window2d(window_func, window_size, **kwargs):
@@ -39,21 +41,55 @@ def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
         logging.info(f'Skipping based on invalid option: {rescale_type}')
     return image
 
-def predict_dpc(data_loader, dpc_model):
+def rescale_truncate(image):
+    if np.amin(image) < 0:
+        image = np.where(image < 0,0,image)
+    if np.amax(image) > 1:
+        image = np.where(image > 1,1,image) 
 
-    dpc_model.eval()
-    global iteration
+    map_img =  np.zeros(image.shape)
+    for band in range(3):
+        p2, p98 = np.percentile(image[:,:,band], (2, 98))
+        map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
+    return map_img
 
-    with torch.no_grad():
-        for idx, input in enumerate(data_loader):
+def standardize_image(
+    image,
+    standardization_type: str,
+    mean: list = None,
+    std: list = None
+):
+    """
+    Standardize image within parameter, simple scaling of values.
+    Loca, Global, and Mixed options.
+    """
+    image = image.astype(np.float32)
+    if standardization_type == 'local':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (image[:, :, i] - np.mean(image[:, :, i])) / \
+                (np.std(image[:, :, i]) + 1e-8)
+    elif standardization_type == 'global':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (image[:, :, i] - mean[i]) / (std[i] + 1e-8)
+    elif standardization_type == 'mixed':
+        raise NotImplementedError
+    return image
 
-            input_seq = input["x"]
-            input_seq = input_seq.to(cuda, dtype=torch.float32)
-            output = dpc_model(input_seq)
 
-            # print('dpc output type: ',type(output))
-
-    return output
+def standardize_batch(
+    image_batch,
+    standardization_type: str,
+    mean: list = None,
+    std: list = None
+):
+    """
+    Standardize image within parameter, simple scaling of values.
+    Loca, Global, and Mixed options.
+    """
+    for item in range(image_batch.shape[0]):
+        image_batch[item, :, :, :] = standardize_image(
+            image_batch[item, :, :, :], 'local', mean, std)
+    return image_batch
 
 
 def generate_corner_windows(window_func, window_size, **kwargs):
@@ -243,27 +279,16 @@ def reverse_seq(window, seq_length):
 
     return all_arr
 
-def predict_dpc(data_loader, dpc_model):
+def predict_dpc(input_seq, dpc_model):
 
     dpc_model.eval()
     global iteration
 
-    feature_lst = []
+    with torch.no_grad():
+        # input_seq = input_seq.to(cuda, dtype=torch.float32)
+        output, _ = dpc_model(input_seq)
 
-    for idx, input in enumerate(data_loader):
-        input_seq = input["x"]
-        # print('input seg: ', input_seq.shape)
-
-        (B,N,SL,C,H,W) = input_seq.shape
-        input_seq = input_seq.to(cuda, dtype=torch.float32)
-        B = input_seq.size(0)
-        features = dpc_model(input_seq)
-        feature_lst.append(features)
-
-    feature_arr = torch.cat(feature_lst, dim=0)
-    print('feature_arr: ', feature_arr.shape)
-
-    return feature_arr.cpu().detach()
+    return output.cpu().detach()
     
     
 def sliding_window_tiler(
@@ -306,8 +331,6 @@ def sliding_window_tiler(
     # n_classes = out of the output layer, output_shape
 
     if model_option == 'unet':
-        
-        xraster = xraster.mean(axis=0)
 
         tiler_image = Tiler(
             data_shape=xraster.shape,
@@ -331,7 +354,7 @@ def sliding_window_tiler(
     elif model_option == 'dpc-unet':
 
         tiler_image = Tiler(
-            data_shape=(xraster.shape[0], xraster.shape[1], xraster.shape[2], xraster.shape[3]),
+            data_shape=xraster.shape,
             tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
             channel_dimension=1,
             overlap=overlap,
@@ -368,61 +391,53 @@ def sliding_window_tiler(
     #    constant_values=constant_value)
     # print("After pad", xraster.shape)
 
+    # xraster = rescale_image(xraster)
+
     # Iterate over the data in batches
     if model_option == 'dpc-unet':
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
-            for j in range(batch.shape[0]):
-                batch[j] = rescale_image(batch[j])
+            # print("batch shape", batch.shape)
+            for i in range(batch.shape[1]):
+                batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
 
             # Standardize
             # batch = batch / normalize
 
             # if standardization is not None:
-            #    batch = standardize_batch(batch, standardization, mean, std)
-
-            # print("AFTER STD", batch.shape)
+            #     for i in range(batch.shape[1]):
+            #         batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
 
             # DPC:
             im_set = get_seq(batch, seq_length)
             new_set = get_chunks(im_set, num_seq)
-            # new_set = torch.Tensor(new_set).to(cuda, dtype=torch.float32)
-            print('new_set shape: ', new_set.shape)
+            new_set = torch.Tensor(new_set).to(cuda, dtype=torch.float32)
+            # print('new_set shape: ', new_set.shape)
 
             (I,L2,N,SL,C,H,W) = new_set.shape
 
-            new_set = rearrange(new_set, "b l2 n sl c h w -> (b l2) n sl c h w")
-
-            train_set = satDataset(new_set)
-
-            loader_args_sat = dict(batch_size=4, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
-            train_sat_dl = DataLoader(train_set, **loader_args_sat)
-
-            output = predict_dpc(train_sat_dl, model)
+            new_set = rearrange(new_set, "i l2 n sl c h w -> (i l2) n sl c h w")
+            output = predict_dpc(new_set, model)
             
             # batch = np.moveaxis(batch, -1, 1)
             # print("AFTER PREDICT", batch.shape, batch_id)
 
             # Merge the updated data in the array
-            merger.add_batch(batch_id, batch_size, output.detach().cpu().numpy())
+            merger.add_batch(batch_id, batch_size, output.numpy())
 
     elif model_option == 'unet':
 
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
-            # print("AFTER SELECT", batch.shape)
-
             # Standardize
-            # batch = batch / normalize
             batch = rescale_image(batch)
 
             # if standardization is not None:
-            #    batch = standardize_batch(batch, standardization, mean, std)
+                # batch = standardize_batch(batch, standardization)
 
             # print("AFTER STD", batch.shape)
 
             batch = torch.Tensor(batch).to(cuda, dtype=torch.float32)
-            # print('batch tensor shape: ', batch.shape)
 
             x = batch
 
@@ -444,13 +459,14 @@ def sliding_window_tiler(
 
     # prediction = np.transpose(prediction, (1,2,0))
 
-    # if prediction.shape[-1] > 1:
-    #     prediction = np.argmax(prediction, axis=-1)
-    # else:
-    #     prediction = np.squeeze(
-    #         np.where(prediction > threshold, 1, 0).astype(np.int16)
-    #     )
+    if prediction.shape[0] > 1:
+        prediction = np.argmax(prediction, axis=0)
+    else:
+        prediction = np.squeeze(
+            np.where(prediction > threshold, 1, 0).astype(np.int16)
+        )
 
+    print('prediction shape after final process: ', prediction.shape)
     
     return prediction
 
