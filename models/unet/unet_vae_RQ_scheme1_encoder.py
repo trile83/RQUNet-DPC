@@ -558,7 +558,7 @@ class UNet_VAE_RQ_scheme1_encoder(nn.Module):
             outs = self.start_filts*(2**i)
             pooling = True if i < depth-1 else False 
             if self.segment and i > (depth-3):
-                dropout = True
+                dropout = False
             else:
                 dropout = False
             shrink = True if i == 0 else False
@@ -598,7 +598,7 @@ class UNet_VAE_RQ_scheme1_encoder(nn.Module):
         # size_lst = [256,128,64,32,16]
         # size_lst = [32,16,8,4,2][:self.depth] # image height, width = 32
         size_lst = [64,32,16,8,4][:self.depth] # image height, width = 64
-        size_lst = [80,40,20,10,5][:self.depth] # image height, width = 64 with 10 padding
+        # size_lst = [80,40,20,10,5][:self.depth] # image height, width = 64 with 10 padding
         Scales_quincunx = 2
         # Tri: Create dictionary where first key is the filter_size of tensors, second key is the quincunx scale
         # Step 0 - Riesz-Quincunx filter banks:

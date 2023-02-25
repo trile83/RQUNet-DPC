@@ -258,13 +258,17 @@ def main():
     hls=False
 
     if not hls:
-        filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+        ts_name = 'Tappan01'
+        if ts_name == 'Tappan14' or ts_name == 'Tappan15':
+            filename = "/home/geoint/tri/hls_ts_video/hls_data_1415.hdf5"
+        else:
+            filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+
         with h5py.File(filename, "r") as file:
             print("Keys: %s" % file.keys())
-            ts_arr = file['Tappan01_PEV_ts'][()]
-            mask_arr = file['Tappan01_mask'][()]
+            ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_mask'][()]
 
-        ts_name = 'Tappan01'
     else:
         ts_name = 'PFV_2021'
         filename = "/home/geoint/tri/hls_ts_video/hls_data_all.hdf5"
@@ -305,7 +309,7 @@ def main():
 
 
     if ts_arr.shape[0] > 9:
-        train_ts_set = ts_arr[:10,1:-2,:,:]
+        train_ts_set = ts_arr[:total_ts_len,1:-2,:,:]
     else:
         train_ts_set = ts_arr[:,1:-2,:,:]
     # train_ts_set = train_ts_set.reshape((1,T,C,H,W))
@@ -313,10 +317,10 @@ def main():
     
     # ignore the no-data edge of cut Tappan Square to HSL
     if not hls:
-        if ts_name == 'Tappan02':
-            train_ts_set = ts_arr[:10,1:-2,1:-1,1:160]
+        if ts_name == 'Tappan02' or ts_name == 'Tappan04':
+            train_ts_set = ts_arr[:total_ts_len,1:-2,1:-1,1:160]
         else:
-            train_ts_set = ts_arr[:10,1:-2,1:-1,1:-1]
+            train_ts_set = ts_arr[:total_ts_len,1:-2,2:-2,2:-2]
         
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -336,13 +340,13 @@ def main():
 
         xraster = train_ts_set.mean(axis=0)
 
-        print('ts xraster min', np.min(xraster))
-        print('ts xraster max', np.max(xraster))
+        # print('ts xraster min', np.min(xraster))
+        # print('ts xraster max', np.max(xraster))
 
         if hls:
             temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
         else:
-            temporary_tif = xr.where(xraster > -1, xraster, 10)
+            temporary_tif = xr.where(xraster > -9000, xraster, 120)
 
         # temporary_tif = rescale_image(temporary_tif)
 
@@ -363,7 +367,10 @@ def main():
     elif unet_option == 'dpc-unet':
 
         network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
-        encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unetvae_hls_98_2.7315708488893155e-06.pth'
+        if network == 'unet':
+            encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unet_hls_98_2.7315708488893155e-06.pth' # unet
+        else:
+            encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0217_10band_unetvae_hls_64_97_2.0649683759061257e-05.pth' # unet-vae
 
         model = DPC_RNN_UNet(sample_size=input_size,
                         device=device,
@@ -377,7 +384,11 @@ def main():
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
 
         ### 13 bands
-        model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
+        if network == 'unet':
+            # model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
+            model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder_10band_ts01_epoch26.pth'
+        else:
+            model_checkpoint = f'{str(model_dir)}dpc-unet_10band_ts01_epoch7.pth'
 
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
@@ -413,9 +424,8 @@ def main():
         if hls:
             temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
         else:
-            temporary_tif = xr.where(xraster > -1, xraster, 7)
+            temporary_tif = xr.where(xraster > -9000, xraster, 2000)
 
-        # Rescale the image
         # temporary_tif = rescale_image(temporary_tif)
 
         prediction = inference.sliding_window_tiler(
@@ -463,7 +473,7 @@ def main():
     plt.title(f"Segmentation Prediction")
     image = prediction
     plt.imshow(image)
-    plt.savefig(f"{str(data_dir)}{ts_name}-{unet_option}-full.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{str(data_dir)}{ts_name}-{unet_option}-{network}.png", dpi=300, bbox_inches='tight')
 
     plt.close()
 

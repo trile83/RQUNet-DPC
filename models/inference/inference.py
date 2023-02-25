@@ -398,8 +398,10 @@ def sliding_window_tiler(
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # print("batch shape", batch.shape)
-            for i in range(batch.shape[1]):
-                batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+            # for i in range(batch.shape[1]):
+            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+
+            batch = rescale_image(batch)
 
             # Standardize
             # batch = batch / normalize

@@ -313,9 +313,9 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     with h5py.File(filename, "r") as file:
-        # print("Keys: %s" % file.keys())
+        print("Keys: %s" % file.keys())
         ts_arr = file['Tappan01_PEV_ts'][()]
         mask_arr = file['Tappan01_mask'][()]
 
@@ -338,14 +338,14 @@ def main():
 
     ## get different chips in the Tappan Square for multiple time series
     # iteration = 10 # I
-    # h_list =[10,20,30,40,50,70,80,90,100,110]
-    # w_list =[15,25,35,45,55,75,85,95,105,115]
+    h_list_train =[10,230,30,40,50,70,80,90,100,110,180,20]
+    w_list_train =[15,240,35,45,55,75,85,95,105,115,195,20]
 
-    h_list_train =[10,20]
-    w_list_train =[15,25]
+    # h_list_train =[10,20]
+    # w_list_train =[15,25]
 
-    num_val = 1
-    num_chips = 10+num_val
+    num_val = 2
+    num_chips = 20+num_val
 
     temp_ts_set = []
     temp_mask_set = []
@@ -355,11 +355,16 @@ def main():
 
     # for i in range(num_chips):
     #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-        if np.any(ts == -1):
-            continue
+    #     if np.any(ts == -9999):
+    #         continue
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-        for j in range(ts.shape[0]):
-            ts[j] = rescale_image(ts[j])
+        ts = rescale_image(ts)
+
+        t_im = np.transpose(ts[0], (1,2,0))
+        t_im = rescale_truncate(t_im[:,:,:3])
+        plt.imshow(t_im)
+        plt.savefig('/home/geoint/tri/dpc/test_im.png')
+        plt.close()
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
         # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -371,6 +376,10 @@ def main():
     train_ts_set = ts_set[:,:total_ts_len] # get the first 100 in the time series
     mask_set = np.stack(temp_mask_set, axis=0)
     train_mask_set = mask_set[:]
+
+    print(f'train ts set max pixel: {np.max(train_ts_set)}')
+    print(f'train ts set min pixel: {np.min(train_ts_set)}')
+
 
     del ts_set
     del mask_set
@@ -392,7 +401,7 @@ def main():
 
     # 3. Create data loaders
     loader_args = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
-    val_loader_args = dict(batch_size=num_val, num_workers=4, pin_memory=True, drop_last=False, shuffle=False)
+    val_loader_args = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=False, shuffle=False)
     train_dl = DataLoader(train_set, **loader_args)
     val_dl = DataLoader(val_set, **val_loader_args)
         
@@ -403,7 +412,10 @@ def main():
     network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
 
     # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
-    model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unetvae_hls_98_2.7315708488893155e-06.pth'
+    if network == 'unet':
+        model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unet_hls_98_2.7315708488893155e-06.pth' # unet
+    elif network == 'unet-vae':
+        model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0217_10band_unetvae_hls_64_97_2.0649683759061257e-05.pth' # unet-vae
 
     model = DPC_RNN_UNet(sample_size=input_size,
                     device=device,
@@ -434,7 +446,7 @@ def main():
 
     ### optimizer ###
     params = model.parameters()
-    optimizer = optim.Adam(params, lr=0.001, weight_decay=0.0001)
+    optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.00001)
     args.old_lr = None
 
     ### load data ###
@@ -487,50 +499,51 @@ def main():
                 train_sat_dl = DataLoader(train_set, **loader_args_sat)
 
                 output, train_loss = train_dpc(train_sat_dl, model, optimizer, network)
+                train_losses.update(train_loss.item(), I*L2)
 
-                for idx, input in enumerate(val_dl):
-                    input_ts_val = input['ts']
-                    input_mask_val = input['mask']
-                    ori_ts_val = input['ori']
+            for idx, input in enumerate(val_dl):
+                input_ts_val = input['ts']
+                input_mask_val = input['mask']
+                ori_ts_val = input['ori']
 
-                    I_val = input_ts_val.size(0)
+                I_val = input_ts_val.size(0)
 
-                    # print(f'val input ts shape: {input_ts.shape}')
-                    # print(f'val input mask shape: {input_mask.shape}')
+                # print(f'val input ts shape: {input_ts.shape}')
+                # print(f'val input mask shape: {input_mask.shape}')
 
-                    input_ts_val = rearrange(input_ts_val, "b l2 n sl c h w -> (b l2) n sl c h w")
-                    val_set = satDataset(input_ts_val, input_mask_val, ori_ts_val)
+                input_ts_val = rearrange(input_ts_val, "b l2 n sl c h w -> (b l2) n sl c h w")
+                val_set = satDataset(input_ts_val, input_mask_val, ori_ts_val)
 
-                    loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=False, drop_last=False, shuffle=False)
-                    val_sat_dl = DataLoader(val_set, **loader_args_sat)
-                    output_val, val_loss = val_dpc(val_sat_dl, model, network)
+                loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=False, drop_last=False, shuffle=False)
+                val_sat_dl = DataLoader(val_set, **loader_args_sat)
+                output_val, val_loss = val_dpc(val_sat_dl, model, network)
 
                 # saved loss value in list
                 # train_loss_lst.append(train_loss)
                 # val_loss_lst.append(val_loss)
 
-                train_losses.update(train_loss.item(), I*L2)
+                # train_losses.update(train_loss.item(), I*L2)
                 val_losses.update(val_loss.item(), I_val*L2)
 
-                print(f"train loss: {train_loss}")
-                print(f"val loss: {val_loss}")
+            # save check_point
+            is_best = val_losses.local_avg < min_loss
 
-                # save check_point
-                is_best = val_loss < min_loss
 
-                if is_best:
-                    min_loss = val_loss
+            if is_best:
+                min_loss = val_losses.local_avg
 
-                    # save dpc weights
-                    save_checkpoint({'epoch': epoch+1,
-                                    'net': args.net,
-                                    'state_dict': model.state_dict(),
-                                    'min_loss': min_loss,
-                                    'optimizer': optimizer.state_dict()}, 
-                                    is_best, filename=os.path.join(model_dir, 'dpc-unet_9band_ts01-train1_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                # save dpc weights
+                save_checkpoint({'epoch': epoch+1,
+                                'net': args.net,
+                                'state_dict': model.state_dict(),
+                                'min_loss': min_loss,
+                                'optimizer': optimizer.state_dict()}, 
+                                is_best, filename=os.path.join(model_dir, f'dpc-unet-{network}-encoder_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
+            print(f"train loss: {train_losses.local_avg}")
+            print(f"val loss: {val_losses.local_avg}")
             # visualize predictions
             index_array = torch.argmax(output_val, dim=1)
             z = ori_ts_val.numpy()
@@ -539,7 +552,7 @@ def main():
             plt.figure(figsize=(20,20))
             plt.subplot(1,3,1)
             plt.title("Image")
-            image = np.transpose(z[0,5,1:4,:,:], (1,2,0))
+            image = np.transpose(z[0,5,:3,:,:], (1,2,0))
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             image = rescale_truncate(image)
             plt.imshow(image)
@@ -549,18 +562,17 @@ def main():
             image = np.transpose(y[0,:,:], (0,1))
             plt.imshow(image)
             # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
-        
             plt.subplot(1,3,3)
             plt.title(f"Segmentation Prediction")
             image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
             plt.imshow(image)
-            plt.savefig(f"/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/train-{str(epoch)}-{str(idx)}-dpc-unet-pred.png")
+            plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-pred.png")
             plt.close()
 
 
         plt.plot(train_loss_out, color ="blue")
         plt.plot(val_loss_out, color = "red")
-        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss.png")
+        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0217.png")
         plt.close()
 
         print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
@@ -668,8 +680,10 @@ def val_dpc(data_loader, dpc_model, network):
             input_mask = input_mask.to(cuda, dtype=torch.long)
 
             (B,N,SL,C,H,W) = input_seq.shape
+
+            # print(f'input mask shape : {input_mask.shape}') # 1 x batch x input_size x input_size
             
-            input_mask = input_mask.view(1, H, W)
+            input_mask = input_mask.view(input_mask.shape[1], H, W)
             B = input_seq.size(0)
 
             # if network == 'unet-vae' or network == 'rqunet-vae-encoder':

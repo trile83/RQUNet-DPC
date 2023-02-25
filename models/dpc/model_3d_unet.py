@@ -51,8 +51,8 @@ class DPC_RNN_UNet(nn.Module):
                 self.backbone = UNet_VAE_old(num_classes=10,segment=False,in_channels=10,depth=5,is_encoder=True)
             elif network == 'unet':
                 self.backbone = UNet_test(num_classes=10, in_channels=10, segment=False,is_encoder=True)
-            else:
-                self.backbone = UNet_VAE_RQ_scheme1_encoder(num_classes=10,segment=False,in_channels=10,depth=5,is_encoder=True,alpha = 0.9)
+            elif network == 'rqunet-vae-encoder':
+                self.backbone = UNet_VAE_RQ_scheme1_encoder(num_classes=10,segment=False,in_channels=10,depth=5,is_encoder=True,alpha = 0.1)
 
             print('Load backbone weights!')
             encoder_dict = self.backbone.state_dict()

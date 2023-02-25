@@ -332,5 +332,3 @@ class UNet_VAE_old(nn.Module):
             x_recon = F.relu(x)
             kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
             return x, x_recon
-
-        # print(f'features skip connecting signal shape: ', features.shape)
