@@ -21,6 +21,9 @@ To perform prediction for small tiles of large raster, same dataset format <br>
 To perform window sliding prediction, run the file <br>
 ```python predict_sliding.py```
 
+To run experiment DPC+Poisson segmentation <br>
+```python dpc_poisson.py```
+
 
 
 
