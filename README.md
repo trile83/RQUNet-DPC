@@ -8,6 +8,7 @@ Dense Predictive Coding [model](https://github.com/TengdaHan/DPC) and UNet [mode
 ## Dense Predictive Coding Architecture
 ![Dense Predictive Coding](models/asset/arch.png) <br>
 
-
+## How to run the code
+Create the Python environment 3.8.12
 
 
