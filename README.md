@@ -9,6 +9,19 @@ Dense Predictive Coding [model](https://github.com/TengdaHan/DPC) and UNet [mode
 ![Dense Predictive Coding](models/asset/arch.png) <br>
 
 ## How to run the code
-Create the Python environment 3.8.12
+Create the Python environment 3.8.12 in terminal/command line for Linux OS
+```conda env create -f environment.yml```
+
+To train DPC + UNet model for image segmentation, prepare the Dataset in time series format for Pytorch: T x C x H x W
+```python train_dpc_seg.py```
+
+To perform prediction for small tiles of large raster, same dataset format
+```python predict_dpc_seg.py```
+
+To perform window sliding prediction, run the file
+```python predict_sliding.py```
+
+
+
 
 
