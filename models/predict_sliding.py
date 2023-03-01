@@ -27,6 +27,7 @@ import rasterio
 import xarray as xr
 from inference import inference
 from tensorboardX import SummaryWriter
+from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
 
 torch.backends.cudnn.benchmark = True
 
@@ -255,10 +256,10 @@ def main():
 
     # prepare data
     ### hls data
-    hls=False
+    hls=True
 
     if not hls:
-        ts_name = 'Tappan01'
+        ts_name = 'Tappan05'
         if ts_name == 'Tappan14' or ts_name == 'Tappan15':
             filename = "/home/geoint/tri/hls_ts_video/hls_data_1415.hdf5"
         else:
@@ -270,12 +271,12 @@ def main():
             mask_arr = file[f'{str(ts_name)}_mask'][()]
 
     else:
-        ts_name = 'PFV_2021'
+        ts_name = 'PEV_2021'
         filename = "/home/geoint/tri/hls_ts_video/hls_data_all.hdf5"
         with h5py.File(filename, "r") as file:
             print("Keys: %s" % file.keys())
-            ts_arr = file['PFV_2021_ts'][()]
-            mask_arr = file['PFV_2021_ts'][()]
+            ts_arr = file['PEV_2021_ts'][()]
+            mask_arr = file['PEV_2021_ts'][()]
 
 
         ts_arr = np.transpose(ts_arr, (0,3,1,2))
@@ -325,7 +326,7 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    unet_option = 'dpc-unet' # 'dpc-unet' and 'unet'
+    unet_option = 'unet' # 'dpc-unet' and 'unet', convlstm
 
     if unet_option == 'unet':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
@@ -338,7 +339,7 @@ def main():
 
         unet_segment.load_state_dict(torch.load(unetsegment_checkpoint)['state_dict'])
 
-        xraster = train_ts_set.mean(axis=0)
+        xraster = train_ts_set[:10,:,:,:].mean(axis=0)
 
         # print('ts xraster min', np.min(xraster))
         # print('ts xraster max', np.max(xraster))
@@ -363,10 +364,53 @@ def main():
             rescale=None,
             model_option=unet_option
         )
+    
+    elif unet_option == 'convlstm':
+        model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+        model = ConvLSTM_Seg(
+            num_classes=2,
+            input_size=(64,64),
+            hidden_dim=160,
+            input_dim=10,
+            kernel_size=(3, 3)
+            )
+ 
+        ### 10 bands
+        model_checkpoint = f'{str(model_dir)}convlstm_10band_epoch_188.pth'
+        if torch.cuda.is_available():
+            model = model.to(cuda)
+
+        model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
+
+        xraster = train_ts_set
+        # xraster = rescale_image(xraster[:10,:,1:-1,1:-1])
+        # xraster = rescale_image(xraster)
+
+        if hls:
+            xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000) # 2000 is the optimal value for the nodata
+        else:
+            xraster = rescale_image(xraster[:10,:,1:-1,1:-1])
+            # temporary_tif = xr.where(xraster > -9000, xraster, 120)
+
+        # temporary_tif = rescale_image(temporary_tif)
+
+        prediction = inference.sliding_window_tiler(
+            xraster=xraster,
+            model=model,
+            n_classes=2,
+            overlap=0.5,
+            batch_size=16,
+            standardization='local',
+            mean=0,
+            std=0,
+            normalize=10000.0,
+            rescale=None,
+            model_option=unet_option
+        )
 
     elif unet_option == 'dpc-unet':
 
-        network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
+        network = 'unet-vae' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
         if network == 'unet':
             encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unet_hls_98_2.7315708488893155e-06.pth' # unet
         else:
@@ -385,8 +429,8 @@ def main():
 
         ### 13 bands
         if network == 'unet':
-            # model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
-            model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder_10band_ts01_epoch26.pth'
+            model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
+            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder_10band_ts01_epoch26.pth'
         else:
             model_checkpoint = f'{str(model_dir)}dpc-unet_10band_ts01_epoch7.pth'
 
@@ -416,13 +460,13 @@ def main():
         # Remove no-data values to account for edge effects
         # temporary_tif = image.values
 
-        # xraster = rescale_image(train_ts_set) # previously works 02-15
-        xraster = train_ts_set
+        xraster = rescale_image(train_ts_set[:10,:,:,:]) # previously works 02-15
+        # xraster = train_ts_set[:10,:,:,:]
 
         # print('ts xraster min', np.min(xraster))
         
         if hls:
-            temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
+            temporary_tif = xr.where(xraster > -9000, xraster, 2000) # 2000 is the optimal value for the nodata
         else:
             temporary_tif = xr.where(xraster > -9000, xraster, 2000)
 
@@ -473,7 +517,7 @@ def main():
     plt.title(f"Segmentation Prediction")
     image = prediction
     plt.imshow(image)
-    plt.savefig(f"{str(data_dir)}{ts_name}-{unet_option}-{network}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{str(data_dir)}{ts_name}-{unet_option}-new.png", dpi=300, bbox_inches='tight')
 
     plt.close()
 

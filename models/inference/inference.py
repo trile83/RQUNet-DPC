@@ -88,7 +88,7 @@ def standardize_batch(
     """
     for item in range(image_batch.shape[0]):
         image_batch[item, :, :, :] = standardize_image(
-            image_batch[item, :, :, :], 'local', mean, std)
+            image_batch[item, :, :, :], standardization_type, mean, std)
     return image_batch
 
 
@@ -372,6 +372,27 @@ def sliding_window_tiler(
             constant_value=constant_value
         )
 
+    else:
+
+        tiler_image = Tiler(
+            data_shape=xraster.shape,
+            tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
+            channel_dimension=1,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+        # Define the tiler and merger based on the output size of the prediction
+        tiler_mask = Tiler(
+            data_shape=(n_classes, xraster.shape[2], xraster.shape[3]),
+            tile_shape=(n_classes, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
     # new_shape_image, padding_image = tiler_image.calculate_padding()
     # new_shape_mask, padding_mask = tiler_mask.calculate_padding()
     # print(xraster.shape, new_shape_image, new_shape_mask)
@@ -398,10 +419,10 @@ def sliding_window_tiler(
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # print("batch shape", batch.shape)
-            # for i in range(batch.shape[1]):
-            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+            for i in range(batch.shape[1]):
+                batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
 
-            batch = rescale_image(batch)
+            # batch = rescale_image(batch)
 
             # Standardize
             # batch = batch / normalize
@@ -451,6 +472,28 @@ def sliding_window_tiler(
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
+
+    else:
+        for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
+
+            # Standardize
+            batch = rescale_image(batch)
+
+            # for i in range(batch.shape[1]):
+            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+
+            # print("AFTER STD", batch.shape)
+
+            batch = torch.Tensor(batch).to(cuda, dtype=torch.float32)
+
+            x = batch
+
+            # Predict
+            batch = model(x)
+
+            # Merge the updated data in the array
+            merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
+
 
     # prediction = merger.merge(
     # extra_padding=padding_mask, unpad=True, dtype=xraster.dtype,

@@ -308,7 +308,7 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % file.keys())
         ts_arr = file['Tappan01_PEV_ts'][()]
@@ -332,8 +332,8 @@ def main():
     # ts_arr = ts_arr[:,::-1,:,:]
 
     ## get different chips in the Tappan Square for multiple time series
-    num_chips = 11 # I
-    num_val=1
+    num_chips = 40 # I
+    num_val=4
 
     # h_list_train =[10,20]
     # w_list_train =[15,25]
@@ -343,14 +343,16 @@ def main():
     temp_ts_set = []
     temp_mask_set = []
 
-    for i in range(len(h_list_train)):
-        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
+    # for i in range(len(h_list_train)):
+    #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
 
-    # for i in range(num_chips+num_val):
-    #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+    for i in range(num_chips+num_val):
+        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-        for j in range(ts.shape[0]):
-            ts[j] = rescale_image(ts[j])
+        # for j in range(ts.shape[0]):
+        #     ts[j] = rescale_image(ts[j])
+
+        ts = rescale_image(ts)
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
         # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -372,7 +374,13 @@ def main():
 
     model_option = "convlstm"
     if model_option == 'convlstm':
-        model = ConvLSTM_Seg(num_classes=2,input_size=(input_size,input_size),hidden_dim=160,input_dim=10,kernel_size=(3, 3))
+        model = ConvLSTM_Seg(
+            num_classes=2,
+            input_size=(input_size,input_size),
+            hidden_dim=160,
+            input_dim=10,
+            kernel_size=(3, 3)
+            )
 
     # model = nn.DataParallel(model)
 
@@ -426,7 +434,7 @@ def main():
 
     for epoch in range(args.start_epoch, args.epochs):
         train_loss = train(train_segment_dl, model, segment_optimizer)
-        val_loss = val(val_segment_dl, model, segment_optimizer)
+        val_loss = val(val_segment_dl, model, epoch)
 
         # saved loss value in list
         train_loss_lst.append(train_loss)
@@ -447,7 +455,9 @@ def main():
                             'state_dict': model.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, f'{model_option}_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=\
+                                os.path.join(model_dir, \
+                                    f'{model_option}_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
 
 
         
@@ -470,8 +480,6 @@ def process_output(mask):
 
 def train(data_loader, segment_model, optimizer):
     losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
     segment_model.train()
     global iteration
 
@@ -494,11 +502,6 @@ def train(data_loader, segment_model, optimizer):
 
         loss = criterion(mask_pred, input_mask)
 
-        # losses.update(loss['loss'].item(), B)
-        # optimizer.zero_grad()
-        # loss['loss'].backward()
-        # optimizer.step()
-
         losses.update(loss.item(), B)
         optimizer.zero_grad()
         loss.backward()
@@ -507,10 +510,8 @@ def train(data_loader, segment_model, optimizer):
     return losses.local_avg
 
 
-def val(data_loader, segment_model, optimizer):
+def val(data_loader, segment_model, epoch):
     losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
     segment_model.eval()
     global iteration
 
@@ -533,7 +534,6 @@ def val(data_loader, segment_model, optimizer):
             # print(f"mask pred shape: {mask_pred.shape}")
 
             loss = criterion(mask_pred, input_mask)
-            # losses.update(loss['loss'].item(), B)
 
             losses.update(loss.item(), B)
 
@@ -559,35 +559,10 @@ def val(data_loader, segment_model, optimizer):
             plt.title(f"Segmentation Prediction")
             image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
             plt.imshow(image)
-            plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(idx)}-dpc-unet-pred.png")
+            plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(idx)}-{epoch}-convlstm-pred.png")
             plt.close()
 
     return losses.local_avg
-
-
-def predict_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.eval()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['x'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,F,H,W) = features.shape
-        batch = 1
-
-        # features = features.view(B*N,SL,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        mask_pred = segment_model(features)
-
-    return mask_pred
 
 
 def set_path(args):

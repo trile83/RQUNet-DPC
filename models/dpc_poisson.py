@@ -345,8 +345,8 @@ def get_data(ts_name_key, input_size, train=True):
     h_list_train =[10]
     w_list_train =[15]
 
-    h_list_test =[20,30,40,50,70,80,90,100,110]
-    w_list_test =[25,35,45,55,75,85,95,105,115]
+    h_list_test =[10,20,30,40,50,70,80,90,100,110]
+    w_list_test =[15,25,35,45,55,75,85,95,105,115]
 
     temp_ts_set = []
     temp_mask_set = []
@@ -365,10 +365,10 @@ def get_data(ts_name_key, input_size, train=True):
             temp_ts_set.append(ts)
             temp_mask_set.append(mask)
     else:
-        for i in range(1):
-            ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-        # for i in range(len(h_list_test)):
-        #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr, h_list_test[i], w_list_test[i], input_size=input_size)
+        # for i in range(1):
+        #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+        for i in range(len(h_list_test)):
+            ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr, h_list_test[i], w_list_test[i], input_size=input_size)
             if np.any(ts == -1):
                 continue
             ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
@@ -376,7 +376,7 @@ def get_data(ts_name_key, input_size, train=True):
                 ts[j] = rescale_image(ts[j])
             mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
-            ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+            # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
             temp_ts_set.append(ts)
             temp_mask_set.append(mask)
@@ -385,6 +385,7 @@ def get_data(ts_name_key, input_size, train=True):
     train_ts_set = train_ts_set[:,:total_ts_len] # get the first 10 in the time series
     train_mask_set = np.stack(temp_mask_set, axis=0)
 
+    print(f"Train set? {train}")
     print(f"train ts set shape: {train_ts_set.shape}")
     print(f"train mask set shape: {train_mask_set.shape}")
 
@@ -398,7 +399,7 @@ def get_data(ts_name_key, input_size, train=True):
     return new_set, train_mask_set, train_ts_set
 
 
-def get_feature_arr(new_set, train_mask_set, model, unet_segment, optimizer, num_seq, seq_length):
+def get_feature_arr(new_set, train_mask_set, model, num_seq, seq_length):
 
     test_set = tsDataset(new_set, train_mask_set)
     # Create data loaders
@@ -429,7 +430,7 @@ def get_feature_arr(new_set, train_mask_set, model, unet_segment, optimizer, num
 
         for epoch in range(len(train_sat_dl)):
 
-            feature_arr = train_dpc(train_sat_dl, model, unet_segment, optimizer, 1, num_seq, seq_length)
+            feature_arr = train_dpc(train_sat_dl, model)
             feature_arr = rearrange(feature_arr, "(b l2) n sl c h w -> b l2 n sl c h w", l2 = L2)
 
         # print(f"feature arr shape: {feature_arr.shape}")
@@ -447,7 +448,7 @@ def get_feature_arr(new_set, train_mask_set, model, unet_segment, optimizer, num
 
     return all_feature_arr
 
-def train_dpc(data_loader, dpc_model, segment_model, optimizer, epoch, num_seq, seq_length):
+def train_dpc(data_loader, dpc_model):
 
     dpc_model.train()
     global iteration
@@ -525,7 +526,7 @@ def poisson_segment(feature_arr, ts, label, type='train', input_size = 64):
     X = np.transpose(X,(1,2,0))
     X = X.reshape((X.shape[0]*X.shape[1],X.shape[2])) # (4096x128)
 
-    rate_train_per_class = 0.6
+    rate_train_per_class = 0.2
     train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
     train_labels = label[train_ind]
 
@@ -588,7 +589,7 @@ def main():
 
     seq_length = 6
     num_seq = 4
-    input_size = 128 ## 64
+    input_size = 64 ## 64
     total_ts_len = 10 # L
 
     padding_size = 0
@@ -605,8 +606,8 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
-    model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unetvae_hls_128_70_3.3414244578817664e-06.pth'
+    model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unet_hls_98_2.7315708488893155e-06.pth'
+    # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unetvae_hls_128_70_3.3414244578817664e-06.pth'
 
     model = DPC_RNN_UNet(sample_size=input_size,
                     device=device,
@@ -619,11 +620,11 @@ def main():
                     freeze=True,
                     segment = False)
 
-    unet_segment = UNet_test(num_classes=2,segment=True,in_channels=128)
+    # unet_segment = UNet_test(num_classes=2,segment=True,in_channels=128)
 
     if torch.cuda.is_available():
         model = model.to(cuda)
-        unet_segment = unet_segment.to(cuda)
+        # unet_segment = unet_segment.to(cuda)
 
     ### optimizer ###
     params = model.parameters()
@@ -632,8 +633,8 @@ def main():
 
     ### main loop ###
     
-    all_feature_arr = get_feature_arr(new_set,train_mask_set,model,unet_segment,optimizer,num_seq,seq_length)
-    test_feature_arr = get_feature_arr(new_test_set,test_mask_set,model,unet_segment,optimizer,num_seq,seq_length)
+    all_feature_arr = get_feature_arr(new_set,train_mask_set,model,num_seq,seq_length)
+    test_feature_arr = get_feature_arr(new_test_set,test_mask_set,model,num_seq,seq_length)
 
     print("Finished with DPC training")
     print("Start Poisson segmentation!")
