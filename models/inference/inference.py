@@ -2,7 +2,6 @@ import logging
 import numpy as np
 # import tensorflow as tf
 import scipy.signal.windows as w
-from tqdm import tqdm
 # from .tiler.tiler import Tiler, Merger
 # from .mosaic import from_array
 from .data import normalize_image, rescale_image, \
@@ -11,8 +10,6 @@ from tiler import Tiler, Merger
 import torch
 from einops import rearrange
 from torch.utils.data import Dataset, DataLoader
-from utils.utils import AverageMeter
-import matplotlib.pyplot as plt
 from skimage import exposure
 
 
@@ -207,6 +204,28 @@ class satDataset(Dataset):
         return {
             'x': X
         }
+    
+class tsDataset(Dataset):
+    'Characterizes a dataset for PyTorch'
+    def __init__(self, X, Y):
+        'Initialization'
+        self.data = X
+        self.mask = Y
+
+    def __len__(self):
+        'Denotes the total number of samples'
+        return len(self.data)
+
+    def __getitem__(self, index):
+        'Generates one sample of data'
+        # Select sample
+        X = self.data[index]
+        Y = self.mask[index]
+
+        return {
+            'ts': torch.tensor(X),
+            'mask': torch.LongTensor(Y)
+        }
 
 def get_seq(sequence, seq_length):
     '''
@@ -279,16 +298,67 @@ def reverse_seq(window, seq_length):
 
     return all_arr
 
-def predict_dpc(input_seq, dpc_model):
+def train_dpc(input_seq, dpc_model):
 
-    dpc_model.eval()
+    dpc_model.train()
     global iteration
 
-    with torch.no_grad():
-        # input_seq = input_seq.to(cuda, dtype=torch.float32)
-        output, _ = dpc_model(input_seq)
+    (B,N,SL,C,H,W) = input_seq.shape
 
-    return output.cpu().detach()
+    input_seq = input_seq.to(cuda, dtype=torch.float32)
+    B = input_seq.size(0)
+
+    features = dpc_model(input_seq)
+
+    return features.cpu().detach()
+
+def get_feature_arr(new_set, train_mask_set, model, num_seq, seq_length):
+
+    test_set = tsDataset(new_set, train_mask_set)
+    # Create data loaders
+    loader_args = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
+    train_dl = DataLoader(test_set, **loader_args)
+    val_dl = DataLoader(test_set, **loader_args)
+    
+    # print(f"length of dpc input training set {len(train_dl)}")
+
+    all_feature_arr = []
+
+    for idx, input in enumerate(train_dl):
+
+        input_ts = input['ts'].to(dtype=torch.float32)
+        # input_mask = input['mask']
+
+        (I,L2,N,SL,C,H,W) = input_ts.shape
+
+        input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
+
+        # print(f"input ts shape {input_ts.shape}")
+        # print(f"input mask shape {input_mask.shape}")
+
+        # test_set = satDataset(input_ts)
+
+        # loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
+        # train_sat_dl = DataLoader(test_set, **loader_args_sat)
+
+        # for epoch in range(len(train_sat_dl)):
+
+        feature_arr = train_dpc(input_ts, model)
+        feature_arr = rearrange(feature_arr, "(b l2) n sl c h w -> b l2 n sl c h w", l2 = L2)
+
+        # print(f"feature arr shape: {feature_arr.shape}")
+
+        all_feature_arr.append(feature_arr)
+
+    all_feature_arr = torch.cat(all_feature_arr, dim=0)
+
+    # print(f"all feature arr shape: {all_feature_arr.shape}")
+    all_feature_arr = reverse_chunks(all_feature_arr, num_seq)
+    # print(f'reverse chunk context vector shape: {all_feature_arr.shape}')
+    all_feature_arr = reverse_seq(all_feature_arr, seq_length)
+    # print(f'reversed windown context vector shape: {all_feature_arr.shape}')
+
+    return all_feature_arr
     
     
 def sliding_window_tiler(
@@ -372,6 +442,27 @@ def sliding_window_tiler(
             constant_value=constant_value
         )
 
+    elif model_option == 'dpc-unet-poisson':
+
+        tiler_image = Tiler(
+            data_shape=xraster.shape,
+            tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
+            channel_dimension=1,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+        # Define the tiler and merger based on the output size of the prediction
+        tiler_mask = Tiler(
+            data_shape=(xraster.shape[0], 128, xraster.shape[2], xraster.shape[3]),
+            tile_shape=(xraster.shape[0], 128, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
     else:
 
         tiler_image = Tiler(
@@ -440,13 +531,35 @@ def sliding_window_tiler(
             (I,L2,N,SL,C,H,W) = new_set.shape
 
             new_set = rearrange(new_set, "i l2 n sl c h w -> (i l2) n sl c h w")
-            output = predict_dpc(new_set, model)
+            output = train_dpc(new_set, model)
             
             # batch = np.moveaxis(batch, -1, 1)
             # print("AFTER PREDICT", batch.shape, batch_id)
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, output.numpy())
+
+    elif model_option == 'dpc-unet-poisson':
+        for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
+
+            # print("batch shape", batch.shape)
+            # batch = rescale_image(batch)
+
+            for i in range(batch.shape[1]):
+                batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+
+            # DPC:
+            im_set = get_seq(batch, seq_length=6) #(I,L1,SL,C,H,W)
+            new_set = get_chunks(im_set, num_seq=4)
+
+            output = get_feature_arr(new_set, batch, model,num_seq=4,seq_length=6)
+            # print(f'final output shape: {output.shape}')
+            
+            # batch = np.moveaxis(batch, -1, 1)
+            # print("AFTER PREDICT", batch.shape, batch_id)
+
+            # Merge the updated data in the array
+            merger.add_batch(batch_id, batch_size, output)
 
     elif model_option == 'unet':
 
@@ -502,16 +615,17 @@ def sliding_window_tiler(
 
     print('prediction shape: ', prediction.shape)
 
-    # prediction = np.transpose(prediction, (1,2,0))
+    #### prediction = np.transpose(prediction, (1,2,0))
 
-    if prediction.shape[0] > 1:
-        prediction = np.argmax(prediction, axis=0)
-    else:
-        prediction = np.squeeze(
-            np.where(prediction > threshold, 1, 0).astype(np.int16)
-        )
 
-    print('prediction shape after final process: ', prediction.shape)
+    # if prediction.shape[0] > 1:
+    #     prediction = np.argmax(prediction, axis=0)
+    # else:
+    #     prediction = np.squeeze(
+    #         np.where(prediction > threshold, 1, 0).astype(np.int16)
+    #     )
+
+    # print('prediction shape after final process: ', prediction.shape)
     
     return prediction
 

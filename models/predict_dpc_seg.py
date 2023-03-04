@@ -332,8 +332,6 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    # prepare data
-    ### hls data
     hls=False
     if not hls:
         filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"

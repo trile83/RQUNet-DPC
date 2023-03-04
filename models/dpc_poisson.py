@@ -30,7 +30,7 @@ torch.backends.cudnn.benchmark = True
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='resnet18', type=str)
 parser.add_argument('--model', default='dpc-rnn', type=str)
-parser.add_argument('--dataset', default='ucf101', type=str)
+parser.add_argument('--dataset', default='hls', type=str)
 parser.add_argument('--seq_len', default=5, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=8, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
@@ -727,48 +727,7 @@ def main():
                 plt.savefig(f"{str(data_dir)}{ts_name_test}-{str(idx)}-test-poisson.png")
             plt.close()
 
-    # with open(f'{data_dir}{ts_name}_poisson_stat_results_train.csv','w') as f1:
-    #     writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
-    #     writer.writerow(['id','accuracy','precision','recall','f1-score','mIoU'])
-    #     for idx in range(all_feature_arr.shape[0]):
-    #     # for idx, (y_pred, x, y) in enumerate(y_preds):
-    #         (y_pred, x ,y_true) = poisson_segment(all_feature_arr[idx], train_ts_set[idx], train_mask_set[idx])
-    #         # (y_pred, x ,y_true) = poisson_predict(model, test_feature_arr[idx], test_ts_set[idx], test_mask_set[idx])
-
-    #         accuracy, precision, recall, f1_score, iou = get_accuracy(y_pred, y_true)
-    #         writer.writerow([idx, accuracy, precision, recall, f1_score, iou])
-
-    #         plt.figure(figsize=(20,20))
-    #         plt.subplot(1,3,1)
-    #         plt.title("Image")
-    #         image = np.transpose(x[5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
-    #         # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-    #         plt.imshow(rescale_truncate(image))
-    #         plt.subplot(1,3,2)
-    #         plt.title("Segmentation Label")
-    #         image = np.transpose(y_true[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
-    #         plt.imshow(image)
-        
-    #         plt.subplot(1,3,3)
-    #         plt.title(f"Segmentation Prediction")
-    #         image = np.transpose(y_pred[padding_size:H-padding_size,padding_size:W-padding_size], (0,1))
-    #         plt.imshow(image)
-    #         plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-poisson.png")
-
-    #         plt.close()
-
     print('Poisson Semi Supervised Finished')
-
-def process_output(mask):
-    '''task mask as input, compute the target for contrastive loss'''
-    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
-    # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-    (B, NP, SQ, B2, NS, _) = mask.size() # [B, P, SQ, B, N, SQ]
-    target = mask == 1
-    target.requires_grad = False
-    return target, (B, B2, NS, NP, SQ)
-
-
 
 
 if __name__ == '__main__':

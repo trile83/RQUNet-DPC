@@ -256,10 +256,10 @@ def main():
 
     # prepare data
     ### hls data
-    hls=True
+    hls=False
 
     if not hls:
-        ts_name = 'Tappan05'
+        ts_name = 'Tappan13'
         if ts_name == 'Tappan14' or ts_name == 'Tappan15':
             filename = "/home/geoint/tri/hls_ts_video/hls_data_1415.hdf5"
         else:
@@ -326,7 +326,7 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    unet_option = 'unet' # 'dpc-unet' and 'unet', convlstm
+    unet_option = 'dpc-unet' # 'dpc-unet' and 'unet', convlstm
 
     if unet_option == 'unet':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
@@ -410,7 +410,7 @@ def main():
 
     elif unet_option == 'dpc-unet':
 
-        network = 'unet-vae' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
+        network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
         if network == 'unet':
             encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unet_hls_98_2.7315708488893155e-06.pth' # unet
         else:
@@ -489,9 +489,14 @@ def main():
     if hls:
         ref_im = ref_im.transpose("y", "x", "band")
 
-    # prediction = torch.argmax(prediction, dim=1)
+    if prediction.shape[0] > 1:
+        prediction = np.argmax(prediction, axis=0)
+    else:
+        prediction = np.squeeze(
+            np.where(prediction > 0.5, 1, 0).astype(np.int16)
+        )
 
-    # prediction = np.argmax(prediction, axis=0)
+    print('prediction shape after final process: ', prediction.shape)
 
     data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
 
