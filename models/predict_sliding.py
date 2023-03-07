@@ -32,11 +32,11 @@ from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--net', default='resnet18', type=str)
-parser.add_argument('--model', default='dpc-rnn', type=str)
-parser.add_argument('--dataset', default='ucf101', type=str)
-parser.add_argument('--seq_len', default=5, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=8, type=int, help='number of video blocks')
+parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
+parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
+parser.add_argument('--dataset', default='hls', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--seq_len', default=4, type=int, help='number of frames in each video block')
+parser.add_argument('--num_seq', default=6, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=64, type=int)
@@ -51,7 +51,7 @@ parser.add_argument('--print_freq', default=5, type=int, help='frequency of prin
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--img_dim', default=32, type=int)
+parser.add_argument('--img_dim', default=64, type=int)
 
 
 def rescale_truncate(image):
@@ -255,11 +255,14 @@ def main():
     global cuda; cuda = torch.device('cuda')
 
     # prepare data
-    ### hls data
-    hls=False
+    ts_name=args.dataset
+    if 'PEV' in args.dataset or 'PFV' in args.dataset:
+        hls = True
+    else:
+        hls = False
 
     if not hls:
-        ts_name = 'Tappan13'
+        # ts_name = 'Tappan13'
         if ts_name == 'Tappan14' or ts_name == 'Tappan15':
             filename = "/home/geoint/tri/hls_ts_video/hls_data_1415.hdf5"
         else:
@@ -271,18 +274,17 @@ def main():
             mask_arr = file[f'{str(ts_name)}_mask'][()]
 
     else:
-        ts_name = 'PEV_2021'
+        # ts_name = 'PEV_2021'
         filename = "/home/geoint/tri/hls_ts_video/hls_data_all.hdf5"
         with h5py.File(filename, "r") as file:
             print("Keys: %s" % file.keys())
-            ts_arr = file['PEV_2021_ts'][()]
-            mask_arr = file['PEV_2021_ts'][()]
+            ts_arr = file[f'{str(ts_name)}_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_ts'][()]
 
 
         ts_arr = np.transpose(ts_arr, (0,3,1,2))
         mask_arr = ts_arr
 
-        # ts_arr = rescale_image(ts_arr)
 
         if 'PFV' in ts_name:
             ref_im_fl = '/home/geoint/PycharmProjects/tensorflow/out_hls/HLS.S30.T28PFV.2021081T110731.v2.0.tif'
@@ -294,12 +296,6 @@ def main():
 
         print('reference image shape: ', ref_im.shape)
 
-    # get RGB image
-    # ts_arr = ts_arr[:,1:4,:,:]
-    # ts_arr = ts_arr[:,::-1,:,:]
-
-    seq_length = 5
-    num_seq = 4
     input_size = 64
     total_ts_len = 10 # L
 
@@ -321,12 +317,12 @@ def main():
         if ts_name == 'Tappan02' or ts_name == 'Tappan04':
             train_ts_set = ts_arr[:total_ts_len,1:-2,1:-1,1:160]
         else:
-            train_ts_set = ts_arr[:total_ts_len,1:-2,2:-2,2:-2]
+            train_ts_set = ts_arr[:total_ts_len,1:-2,1:-1,1:-1]
         
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    unet_option = 'dpc-unet' # 'dpc-unet' and 'unet', convlstm
+    unet_option = args.model # 'dpc-unet' and 'unet', convlstm
 
     if unet_option == 'unet':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
@@ -340,9 +336,6 @@ def main():
         unet_segment.load_state_dict(torch.load(unetsegment_checkpoint)['state_dict'])
 
         xraster = train_ts_set[:10,:,:,:].mean(axis=0)
-
-        # print('ts xraster min', np.min(xraster))
-        # print('ts xraster max', np.max(xraster))
 
         if hls:
             temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
@@ -383,13 +376,11 @@ def main():
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
         xraster = train_ts_set
-        # xraster = rescale_image(xraster[:10,:,1:-1,1:-1])
-        # xraster = rescale_image(xraster)
 
         if hls:
             xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000) # 2000 is the optimal value for the nodata
         else:
-            xraster = rescale_image(xraster[:10,:,1:-1,1:-1])
+            xraster = rescale_image(xraster[:10,:,:,:])
             # temporary_tif = xr.where(xraster > -9000, xraster, 120)
 
         # temporary_tif = rescale_image(temporary_tif)
@@ -410,7 +401,7 @@ def main():
 
     elif unet_option == 'dpc-unet':
 
-        network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
+        network = args.net # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
         if network == 'unet':
             encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unet_hls_98_2.7315708488893155e-06.pth' # unet
         else:
@@ -453,12 +444,6 @@ def main():
         print("Start segmentation!")
 
         ## visualize
-        
-        # Transpose the image for channel last format
-        # image = np.transpose(image, (1,2,0))
-
-        # Remove no-data values to account for edge effects
-        # temporary_tif = image.values
 
         xraster = rescale_image(train_ts_set[:10,:,:,:]) # previously works 02-15
         # xraster = train_ts_set[:10,:,:,:]
@@ -591,30 +576,7 @@ def predict_dpc(data_loader, dpc_model):
     return feature_arr.cpu().detach()
 
 
-def predict_segment(data_loader, segment_model, optimizer):
-
-    segment_model.eval()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['x'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,F,H,W) = features.shape
-        batch = 1
-
-        # features = features.view(B*N,SL,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        mask_pred, _ = segment_model(features)
-
-    return mask_pred
-
-
 if __name__ == '__main__':
     main()
 
-    # python main.py --gpu 0 --net resnet18 --dataset ucf101 --batch_size 128 --img_dim 128 --epochs 100
+    # python models/predict_sliding.py --gpu 0 --net unet --model convlstm --dataset Tappan13

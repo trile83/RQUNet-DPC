@@ -318,11 +318,11 @@ def get_accuracy(y_pred, y_true):
 def get_data(ts_name_key, input_size, train=True):
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     with h5py.File(filename, "r") as f:
         # print("Keys: %s" % f.keys())
-        ts_arr = f[ts_name_key+'_PEV_ts'][()]
-        mask_arr = f[ts_name_key+'_mask'][()]
+        ts_arr = f[str(ts_name_key)+'_PEV_ts'][()]
+        mask_arr = f[str(ts_name_key)+'_mask'][()]
 
     seq_length = 6
     num_seq = 4
@@ -352,12 +352,14 @@ def get_data(ts_name_key, input_size, train=True):
     temp_mask_set = []
     if train:
         for i in range(len(h_list_train)):
-            ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
-            if np.any(ts == -1):
-                continue
-            ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-            for j in range(ts.shape[0]):
-                ts[j] = rescale_image(ts[j])
+            ts, mask = specific_chipper(ts_arr[:total_ts_len,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
+            # if np.any(ts == -1):
+            #     continue
+
+            ts = np.squeeze(ts)
+            # for j in range(ts.shape[0]):
+            #     ts[j] = rescale_image(ts[j])
+            ts = rescale_image(ts)
             mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
             ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -368,12 +370,14 @@ def get_data(ts_name_key, input_size, train=True):
         # for i in range(1):
         #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
         for i in range(len(h_list_test)):
-            ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr, h_list_test[i], w_list_test[i], input_size=input_size)
-            if np.any(ts == -1):
-                continue
-            ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-            for j in range(ts.shape[0]):
-                ts[j] = rescale_image(ts[j])
+            ts, mask = specific_chipper(ts_arr[:total_ts_len,1:-2,:,:], mask_arr, h_list_test[i], w_list_test[i], input_size=input_size)
+            # if np.any(ts == -1):
+            #     continue
+
+            ts = np.squeeze(ts)
+            # for j in range(ts.shape[0]):
+            #     ts[j] = rescale_image(ts[j], "per-image")
+            ts = rescale_image(ts)
             mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
             # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
@@ -382,7 +386,7 @@ def get_data(ts_name_key, input_size, train=True):
             temp_mask_set.append(mask)
 
     train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 10 in the time series
+    train_ts_set = train_ts_set # get the first 10 in the time series
     train_mask_set = np.stack(temp_mask_set, axis=0)
 
     print(f"Train set? {train}")
@@ -428,10 +432,10 @@ def get_feature_arr(new_set, train_mask_set, model, num_seq, seq_length):
         loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
         train_sat_dl = DataLoader(test_set, **loader_args_sat)
 
-        for epoch in range(len(train_sat_dl)):
+        # for epoch in range(len(train_sat_dl)):
 
-            feature_arr = train_dpc(train_sat_dl, model)
-            feature_arr = rearrange(feature_arr, "(b l2) n sl c h w -> b l2 n sl c h w", l2 = L2)
+        feature_arr = train_dpc(train_sat_dl, model)
+        feature_arr = rearrange(feature_arr, "(b l2) n sl c h w -> b l2 n sl c h w", l2 = L2)
 
         # print(f"feature arr shape: {feature_arr.shape}")
 
@@ -580,9 +584,9 @@ def main():
 
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as f:
-        print("Keys: %s" % f.keys())
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    # with h5py.File(filename, "r") as f:
+    #     print("Keys: %s" % f.keys())
 
     ts_name_train = 'Tappan01'
     ts_name_test = 'Tappan05'
@@ -708,7 +712,9 @@ def main():
             plt.figure(figsize=(20,20))
             plt.subplot(1,3,1)
             plt.title("Image")
-            image = np.transpose(x[5,1:4,padding_size:H-padding_size,padding_size:W-padding_size], (1,2,0))
+            # image = x[0,:3,padding_size:H-padding_size,padding_size:W-padding_size]
+            image = x[5,:3,:,:]
+            image = np.transpose(image, (1,2,0))
             # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
             plt.imshow(rescale_truncate(image))
 

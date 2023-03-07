@@ -253,28 +253,19 @@ def specific_chipper(ts_stack, mask, h_index, w_index, input_size=32):
 
     return out_ts, out_mask
 
-def train_dpc(data_loader, dpc_model):
+def train_dpc(input_set, dpc_model):
 
     dpc_model.train()
     global iteration
 
-    image_lst = []
-    feature_lst = []
+    input_seq = torch.tensor(input_set)
+    # input_seq = torch.unsqueeze(input_seq, 0)
+    print(f'input seq shape: {input_seq.shape}')
+    (B,N,SL,C,H,W) = input_seq.shape
+    input_seq = input_seq.to(cuda, dtype=torch.float32)
+    features = dpc_model(input_seq)
 
-    for idx, input in enumerate(data_loader):
-
-        tic = time.time()
-        # print(f'id: {idx}')
-        input_seq = input["x"]
-        (B,N,SL,C,H,W) = input_seq.shape
-        input_seq = input_seq.to(cuda, dtype=torch.float32)
-        features = dpc_model(input_seq)
-        feature_lst.append(features)
-
-    feature_arr = torch.cat(feature_lst, dim=0)
-
-    return feature_arr.cpu().detach()
-
+    return features.cpu().detach()
 
 def predict_dpc_sliding(xraster, dpc_model):
 
@@ -323,62 +314,12 @@ def get_feature_arr(input_set, train_mask_set, num_seq, seq_length, device, inpu
     if torch.cuda.is_available():
         model = model.to(cuda)
 
-    # print(f"length of dpc input training set {len(input_set)}")
-
     all_feature_arr = []
-    
-    if train:
-        test_set = tsDataset(input_set, train_mask_set)
-        # Create data loaders
-        loader_args = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=False)
-        train_dl = DataLoader(test_set, **loader_args)
-        
-        print(f"length of dpc input training set {len(train_dl)}")
 
-        all_feature_arr = []
+    xraster = input_set
+    all_feature_arr = predict_dpc_sliding(xraster, model)
 
-        for idx, input in enumerate(train_dl):
-
-            input_ts = input['ts']
-            input_mask = input['mask']
-
-            (I,L2,N,SL,C,H,W) = input_ts.shape
-
-            input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
-
-            # print(f"input ts shape {input_ts.shape}")
-            # print(f"input mask shape {input_mask.shape}")
-
-            test_set = satDataset(input_ts, input_mask)
-
-            loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
-            train_sat_dl = DataLoader(test_set, **loader_args_sat)
-
-            for epoch in range(len(train_sat_dl)):
-
-                feature_arr = train_dpc(train_sat_dl, model)
-                feature_arr = rearrange(feature_arr, "(b l2) n sl c h w -> b l2 n sl c h w", l2 = L2)
-
-            # print(f"feature arr shape: {feature_arr.shape}")
-
-            all_feature_arr.append(feature_arr)
-
-        all_feature_arr = torch.cat(all_feature_arr, dim=0)
-        # print(f"all feature arr shape: {all_feature_arr.shape}")
-        all_feature_arr = reverse_chunks(all_feature_arr, num_seq)
-        # print(f'reverse chunk context vector shape: {all_feature_arr.shape}')
-        all_feature_arr = reverse_seq(all_feature_arr, seq_length)
-        # print(f'reversed window context vector shape: {all_feature_arr.shape}')
-
-        print(f"train feature shape: {all_feature_arr.shape}")
-
-        del feature_arr
-    
-    else:
-        xraster = rescale_image(input_set[:10,:,:,:])
-        all_feature_arr = predict_dpc_sliding(xraster, model)
-
-        print(f'test feature arr shape {all_feature_arr.shape}')
+    print(f'test feature arr shape {all_feature_arr.shape}')
 
     return all_feature_arr
 
@@ -391,7 +332,6 @@ def stack_features(feature_arr, label, feats, type='train', train_ind_lst=[], tr
     label = label.reshape((label.shape[0]*label.shape[1]))
     X = np.transpose(X,(1,2,0))
     X = X.reshape((X.shape[0]*X.shape[1],X.shape[2]))
-    # X = X.reshape((-1,3))
     # print(f'X shape: {X.shape}')
 
     if type == 'train':
@@ -400,7 +340,7 @@ def stack_features(feature_arr, label, feats, type='train', train_ind_lst=[], tr
         else:
             pixel_vals = np.vstack((feats,np.float32(X)))
 
-        rate_train_per_class = 0.6
+        rate_train_per_class = 5
         train_ind = gl.trainsets.generate(label, rate=rate_train_per_class)
         train_labels = label[train_ind]
 
@@ -416,20 +356,15 @@ def stack_features(feature_arr, label, feats, type='train', train_ind_lst=[], tr
 def get_data(ts_name_key, input_size, train=True):
     # prepare data
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as f:
+    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    with h5py.File(filename, "r") as file:
         # print("Keys: %s" % f.keys())
-        ts_arr = f[ts_name_key+'_PEV_ts'][()]
-        mask_arr = f[ts_name_key+'_mask'][()]
+        ts_arr = file[f'{str(ts_name_key)}_PEV_ts'][()]
+        mask_arr = file[f'{str(ts_name_key)}_mask'][()]
 
-    seq_length = 6
-    num_seq = 4
     total_ts_len = 10 # L
 
     padding_size = 0
-
-    train_ts_set = []
-    train_mask_set = []
 
     # ignore the no-data edge of cut Tappan Square to HSL
     if ts_name_key == 'Tappan02' or ts_name_key == 'Tappan04':
@@ -439,54 +374,18 @@ def get_data(ts_name_key, input_size, train=True):
 
     ## get different chips in the Tappan Square for multiple time series
 
-    h_list_train =[10]
-    w_list_train =[15]
-
-    temp_ts_set = []
-    temp_mask_set = []
-    if train:
-        for i in range(len(h_list_train)):
-            ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
-            if np.any(ts == -1):
-                continue
-            ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-            for j in range(ts.shape[0]):
-                ts[j] = rescale_image(ts[j])
-            mask = mask.reshape((mask.shape[1],mask.shape[2]))
-
-            # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
-
-            temp_ts_set.append(ts)
-            temp_mask_set.append(mask)
-
-        train_ts_set = np.stack(temp_ts_set, axis=0)
-        train_ts_set = train_ts_set[:,:total_ts_len] # get the first 10 in the time series
-        train_mask_set = np.stack(temp_mask_set, axis=0)
-
-        # print(f"Train set? {train}")
-        # print(f"train ts set shape: {train_ts_set.shape}")
-        print(f"train mask set shape: {train_mask_set.shape}")
-
-        im_set = get_seq(train_ts_set, seq_length) #(I,L1,SL,C,H,W)
-        # print(f'window sequence shape: {im_set.shape}')
-
-        new_set = get_chunks(im_set, num_seq)
-
-        print(f'chunk sequence shape: {new_set.shape}') # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
-
-        del im_set
-
-        return new_set, train_mask_set, train_ts_set
+    # print(train_ts_set.shape)
     
-    else:
+    max_bound = -1
+    ts_set = ts_arr[:10,1:-2,1:max_bound,1:max_bound]
+    # ts_set = rescale_image(ts_arr[:10,1:-2,1:-1,1:-1])
 
-        ts_set = ts_arr[:10,1:-2,1:-1,1:-1]
-        # ts_set = rescale_image(ts_arr[:10,1:-2,1:-1,1:-1])
-        mask_set = mask_arr[1:-1,1:-1]
+    ts_set = rescale_image(ts_set)
+    mask_set = mask_arr[1:max_bound,1:max_bound]
 
-        print(f'test ts shape: {ts_set.shape}')
-        print(f'test mask shape: {mask_set.shape}')
-        return ts_set, mask_set
+    print(f'{ts_name_key} ts shape: {ts_set.shape}')
+    print(f'{ts_name_key} mask shape: {mask_set.shape}')
+    return ts_set, mask_set
     
 
 def poisson_predict(stacked_features, train_ind, train_labels, input_size = 64):
@@ -499,7 +398,7 @@ def poisson_predict(stacked_features, train_ind, train_labels, input_size = 64):
     
     #Run Poisson learning
     # class_priors = gl.utils.class_priors(label)
-    model = gl.ssl.poisson(W, solver='conjugate_gradient')
+    model = gl.ssl.poisson(W, solver='conjugate_gradient') # gradient_descent
     pred_label = model.fit_predict(train_ind, train_labels)
 
     # accuracy = gl.ssl.ssl_accuracy(pred_label, label, len(train_ind))   
@@ -519,6 +418,7 @@ def main():
     # prepare data
     ### hls data
     hls=False
+    use_dpc=False
 
     if not hls:
         ts_name = 'Tappan05'
@@ -541,7 +441,6 @@ def main():
             mask_arr = file['PEV_2021_ts'][()]
 
         ts_arr = np.transpose(ts_arr, (0,3,1,2))
-        mask_arr = ts_arr
 
         # ts_arr = rescale_image(ts_arr)
 
@@ -555,30 +454,25 @@ def main():
 
         print('reference image shape: ', ref_im.shape)
 
-    # get RGB image
-    # ts_arr = ts_arr[:,1:4,:,:]
-    # ts_arr = ts_arr[:,::-1,:,:]
-
     ts_name_train = 'Tappan01'
-    ts_name_test = 'Tappan01'
+    ts_name_test = 'Tappan05'
 
     seq_length = 6
     num_seq = 4
     input_size = 64
 
-    train_set, train_mask_set, train_ts_set = get_data(ts_name_train, input_size, train=True)
-    # (I,L2,N,SL,C,H,W) = new_set.shape
+    # train_set, train_mask_set, train_ts_set = get_data(ts_name_train, input_size, train=True)
+    train_set, train_mask_set = get_data(ts_name_train, input_size, train=False)
     test_set, test_mask_set = get_data(ts_name_test, input_size, train=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    all_feature_arr = get_feature_arr(train_set,train_mask_set,\
-                                      num_seq,seq_length,device=device,input_size=64,train=True)
-    
-    print(f'max train feature {np.max(all_feature_arr)}')
-    print(f'min train feature {np.min(all_feature_arr)}')
-
-    test_feature_arr = get_feature_arr(test_set,test_mask_set,num_seq,seq_length,device=device,input_size=64)
+    if use_dpc:
+        train_feature_arr = get_feature_arr(train_set,train_mask_set,num_seq,seq_length,device=device,input_size=64)
+        test_feature_arr = get_feature_arr(test_set,test_mask_set,num_seq,seq_length,device=device,input_size=64)
+    else:
+        train_feature_arr = train_set
+        test_feature_arr = test_set
 
     print(f'max test feature {np.max(test_feature_arr)}')
     print(f'min test feature {np.min(test_feature_arr)}')
@@ -589,37 +483,41 @@ def main():
 
     train_ind_lst = []
     train_labels_lst = []
-    feats_ini = []
-    feats_ini = np.asarray(feats_ini)
-
-    train_features, train_ind_lst, train_labels_lst = stack_features(all_feature_arr[0],train_mask_set[0], \
-        feats = feats_ini, type='train', train_ind_lst=train_ind_lst, train_labels_lst=train_labels_lst)
-
-    # feats_ini = train_features
+    feats_ini = np.asarray([])
+    
+    train_features, train_ind_lst, train_labels_lst = stack_features(train_feature_arr,train_mask_set, \
+        feats=feats_ini, type='train', train_ind_lst=train_ind_lst, train_labels_lst=train_labels_lst)
+    
+    test_features, test_ind_lst, test_labels_lst = stack_features(test_feature_arr,test_mask_set, \
+        feats=train_features, type='test', train_ind_lst=train_ind_lst, train_labels_lst=train_labels_lst)
 
     print(f'train features shape: {train_features.shape}')
 
-    stacked_features, train_ind_lst, train_labels_lst = stack_features(test_feature_arr,test_mask_set, \
-        feats = train_features, type='test', train_ind_lst=train_ind_lst, train_labels_lst=train_labels_lst)
+    stacked_features = test_features
 
     del feats_ini
     del train_features
 
-    train_ind_arr = train_ind_lst
-    train_labels_arr = train_labels_lst
-
-    print(f'train ind arr shape: {train_ind_arr.shape}')
-    print(f'train label arr shape: {train_labels_arr.shape}')
+    print(f'train ind arr shape: {train_ind_lst.shape}')
+    print(f'train label arr shape: {train_labels_lst.shape}')
     print(f'stacked features shape: {stacked_features.shape}')
 
-    labels_poisson = poisson_predict(stacked_features, train_ind_arr, train_labels_arr)
+    labels_poisson = poisson_predict(stacked_features, train_ind_lst, train_labels_lst)
+    print(f'labels poisson shape: {labels_poisson.shape}')
 
-    for i in range(1+1):
-        if i == 0:
-            train_pred = labels_poisson[i*(input_size*input_size):(i+1)*(input_size*input_size)]
-            train_pred = train_pred.reshape((input_size,input_size))
-        else:
-            test_pred = labels_poisson[(input_size*input_size):]
+    num_chips = train_set.shape[0]
+    test_size = test_set.shape[0]
+
+    segment_images=[]
+    for i in range(num_chips+test_size):
+        segment_images.append(labels_poisson[i*(H*W):(i+1)*(H*W)])
+
+    for idx in range(len(segment_images)):
+        if idx == 0:
+            train_pred = segment_images[idx]
+            train_pred = train_pred.reshape((H,W))
+        elif idx == 1:
+            test_pred = segment_images[idx]
             test_pred = test_pred.reshape((H,W))
 
     prediction = test_pred
@@ -635,23 +533,29 @@ def main():
     plt.figure(figsize=(20,20))
     plt.subplot(1,3,1)
     plt.title("Image")
-    image = np.transpose(train_ts_set[0,5,:3,:,:], (1,2,0))
+    # image = np.transpose(test_feature_arr[5,:3,:,:], (1,2,0))
+    image = np.transpose(train_set[5,:3,:,:], (1,2,0))
     if hls:
         image= rescale_image(xr.where(image > -9000, image, 600))
     else:
         image= rescale_image(xr.where(image > -1000, image, 150))
+
     plt.imshow(rescale_truncate(image))
 
     plt.subplot(1,3,2)
     plt.title("Label")
-    image = train_mask_set[0]
+    image = train_mask_set
     plt.imshow(image)
 
     plt.subplot(1,3,3)
     plt.title(f"Prediction")
     image = train_pred
     plt.imshow(image)
-    plt.savefig(f"{str(data_dir)}{ts_name_train}-dpc-unet-poisson-train.png", dpi=300, bbox_inches='tight')
+    if use_dpc:
+        plt.savefig(f"{str(data_dir)}{ts_name_train}-dpc-unet-poisson-train.png", dpi=300, bbox_inches='tight')
+    else:
+        plt.savefig(f"{str(data_dir)}{ts_name_train}-poisson-train.png", dpi=300, bbox_inches='tight')
+
     plt.close()
 
     del image
@@ -660,6 +564,7 @@ def main():
     plt.figure(figsize=(20,20))
     plt.subplot(1,3,1)
     plt.title("Image")
+    # image = np.transpose(test_feature_arr[5,:3,:,:], (1,2,0))
     image = np.transpose(test_set[5,:3,:,:], (1,2,0))
     if hls:
         image= rescale_image(xr.where(image > -9000, image, 600))
@@ -677,7 +582,10 @@ def main():
     plt.title(f"Prediction")
     image = test_pred
     plt.imshow(image)
-    plt.savefig(f"{str(data_dir)}{ts_name_test}-dpc-unet-poisson-test.png", dpi=300, bbox_inches='tight')
+    if use_dpc:
+        plt.savefig(f"{str(data_dir)}{ts_name_test}-dpc-unet-poisson-test.png", dpi=300, bbox_inches='tight')
+    else:
+        plt.savefig(f"{str(data_dir)}{ts_name_test}-poisson-test.png", dpi=300, bbox_inches='tight')
 
     plt.close()
 

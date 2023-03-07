@@ -308,9 +308,33 @@ def train_dpc(input_seq, dpc_model):
     input_seq = input_seq.to(cuda, dtype=torch.float32)
     B = input_seq.size(0)
 
-    features = dpc_model(input_seq)
+    features, _ = dpc_model(input_seq)
 
     return features.cpu().detach()
+
+def train_dpc_poisson(data_loader, dpc_model):
+
+    dpc_model.train()
+    global iteration
+
+    feature_lst = []
+
+    for idx, input in enumerate(data_loader):
+
+        # print(f'id: {idx}')
+        input_seq = input["x"]
+
+        (B,N,SL,C,H,W) = input_seq.shape
+        input_seq = input_seq.to(cuda, dtype=torch.float32)
+        B = input_seq.size(0)
+
+        features = dpc_model(input_seq)
+
+        feature_lst.append(features)
+
+    feature_arr = torch.cat(feature_lst, dim=0)
+
+    return feature_arr.cpu().detach()
 
 def get_feature_arr(new_set, train_mask_set, model, num_seq, seq_length):
 
@@ -336,18 +360,16 @@ def get_feature_arr(new_set, train_mask_set, model, num_seq, seq_length):
         # print(f"input ts shape {input_ts.shape}")
         # print(f"input mask shape {input_mask.shape}")
 
-        # test_set = satDataset(input_ts)
-
-        # loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
-        # train_sat_dl = DataLoader(test_set, **loader_args_sat)
+        test_set = satDataset(input_ts)
+        loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
+        train_sat_dl = DataLoader(test_set, **loader_args_sat)
 
         # for epoch in range(len(train_sat_dl)):
 
-        feature_arr = train_dpc(input_ts, model)
+        feature_arr = train_dpc_poisson(train_sat_dl, model)
         feature_arr = rearrange(feature_arr, "(b l2) n sl c h w -> b l2 n sl c h w", l2 = L2)
 
         # print(f"feature arr shape: {feature_arr.shape}")
-
         all_feature_arr.append(feature_arr)
 
     all_feature_arr = torch.cat(all_feature_arr, dim=0)
@@ -545,8 +567,8 @@ def sliding_window_tiler(
             # print("batch shape", batch.shape)
             # batch = rescale_image(batch)
 
-            for i in range(batch.shape[1]):
-                batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+            # for i in range(batch.shape[1]):
+            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
 
             # DPC:
             im_set = get_seq(batch, seq_length=6) #(I,L1,SL,C,H,W)
