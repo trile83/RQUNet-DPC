@@ -24,29 +24,35 @@ import cv2
 import rioxarray as rxr
 from tensorboardX import SummaryWriter
 
+torch.cuda.empty_cache()
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--net', default='resnet18', type=str)
-parser.add_argument('--model', default='dpc-rnn', type=str)
-parser.add_argument('--dataset', default='ucf101', type=str)
-parser.add_argument('--seq_len', default=5, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=8, type=int, help='number of video blocks')
+parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
+parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
+parser.add_argument('--dataset', default='Tappan01', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
+parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=64, type=int)
-parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
+parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=50, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--img_dim', default=32, type=int)
+parser.add_argument('--img_dim', default=64, type=int)
+parser.add_argument('--ts_length', default=10, type=int)
+parser.add_argument('--pad_size', default=0, type=int)
+parser.add_argument('--num_classes', default=2, type=int)
+parser.add_argument('--num_chips', default=40, type=int)
+parser.add_argument('--num_val', default=4, type=int)
 
 def rescale_truncate(image):
     if np.amin(image) < 0:
@@ -313,19 +319,26 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
+    ts_name=args.dataset
+    if 'PEV' in args.dataset or 'PFV' in args.dataset:
+        hls = True
+    else:
+        hls = False
+
     filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     with h5py.File(filename, "r") as file:
-        print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan01_PEV_ts'][()]
-        mask_arr = file['Tappan01_mask'][()]
+        # print("Keys: %s" % file.keys())
+        ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+        mask_arr = file[f'{str(ts_name)}_mask'][()]
 
-    seq_length = 6
-    num_seq = 4
-    input_size = 64 ## 64
-    total_ts_len = 10 # L
+    input_size = args.img_dim
+    total_ts_len = args.ts_length # L
 
-    padding_size = 8
-    
+    padding_size = args.pad_size
+
+    seq_length = args.seq_len
+    num_seq = args.num_seq
+
     # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
 
@@ -339,25 +352,25 @@ def main():
     ## get different chips in the Tappan Square for multiple time series
     # iteration = 10 # I
     h_list_train =[10,230,30,40,50,70,80,90,100,110,180,20]
-    w_list_train =[15,240,35,45,55,75,85,95,105,115,195,20]
+    w_list_train =[15,240,35,45,55,75,85,95,105,115,195,25]
 
     # h_list_train =[10,20]
     # w_list_train =[15,25]
 
-    num_val = 2
-    num_chips = 20+num_val
+    num_val = args.num_val
+    num_chips = args.num_chips
 
     temp_ts_set = []
     temp_mask_set = []
-    for i in range(len(h_list_train)):
-        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], \
-            input_size=input_size)
+    # for i in range(len(h_list_train)):
+    #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], \
+    #         input_size=input_size)
 
-    # for i in range(num_chips):
-    #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-    #     if np.any(ts == -9999):
-    #         continue
-        ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+    for i in range(num_chips+num_val):
+        ts, mask = chipper(ts_arr[:total_ts_len,1:-2,:,:], mask_arr, input_size=input_size)
+        if np.any(ts == -9999):
+            continue
+        ts = np.squeeze(ts)
         ts = rescale_image(ts)
 
         t_im = np.transpose(ts[0], (1,2,0))
@@ -379,7 +392,6 @@ def main():
 
     print(f'train ts set max pixel: {np.max(train_ts_set)}')
     print(f'train ts set min pixel: {np.min(train_ts_set)}')
-
 
     del ts_set
     del mask_set
@@ -409,7 +421,7 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    network = 'unet' # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
+    network = args.net # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
 
     # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
     if network == 'unet':
@@ -419,8 +431,8 @@ def main():
 
     model = DPC_RNN_UNet(sample_size=input_size,
                     device=device,
-                    num_seq=4, 
-                    seq_len=6, 
+                    num_seq=args.num_seq, 
+                    seq_len=args.seq_len, 
                     network=network,
                     pred_step=1,
                     model_weight=model_checkpoint,
@@ -446,7 +458,7 @@ def main():
 
     ### optimizer ###
     params = model.parameters()
-    optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.00001)
+    optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
     args.old_lr = None
 
     ### load data ###
@@ -528,7 +540,6 @@ def main():
             # save check_point
             is_best = val_losses.local_avg < min_loss
 
-
             if is_best:
                 min_loss = val_losses.local_avg
 
@@ -538,12 +549,13 @@ def main():
                                 'state_dict': model.state_dict(),
                                 'min_loss': min_loss,
                                 'optimizer': optimizer.state_dict()}, 
-                                is_best, filename=os.path.join(model_dir, f'dpc-unet-{network}-encoder_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_dir, f'dpc-unet-{network}-encoder-0306_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
             print(f"train loss: {train_losses.local_avg}")
             print(f"val loss: {val_losses.local_avg}")
+
             # visualize predictions
             index_array = torch.argmax(output_val, dim=1)
             z = ori_ts_val.numpy()
@@ -1003,4 +1015,5 @@ train-{args.train_what}{2}'.format(
 if __name__ == '__main__':
     main()
 
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
+    # python models/train_dpc_seg.py --net unet-vae --dataset Tappan01 --epochs 100

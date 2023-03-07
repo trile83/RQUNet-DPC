@@ -16,6 +16,7 @@ from backbone.resnet_2d3d import neq_load_customized
 from utils.augmentation import *
 from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy
 from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
+from benchmod.convgru import ConvGRU_Seg
 from tqdm import tqdm
 import argparse
 import h5py
@@ -28,13 +29,13 @@ torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='resnet18', type=str)
-parser.add_argument('--model', default='dpc-rnn', type=str)
-parser.add_argument('--dataset', default='ucf101', type=str)
-parser.add_argument('--seq_len', default=5, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=8, type=int, help='number of video blocks')
+parser.add_argument('--model', default='convlstm', type=str, help='convlstm, convgru')
+parser.add_argument('--dataset', default='Tappan01', type=str, help='Tappan01, Tappan05')
+parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
+parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
-parser.add_argument('--batch_size', default=64, type=int)
+parser.add_argument('--batch_size', default=1, type=int)
 parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -46,7 +47,12 @@ parser.add_argument('--print_freq', default=5, type=int, help='frequency of prin
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--img_dim', default=32, type=int)
+parser.add_argument('--img_dim', default=64, type=int)
+parser.add_argument('--ts_length', default=10, type=int)
+parser.add_argument('--pad_size', default=0, type=int)
+parser.add_argument('--num_chips', default=40, type=int)
+parser.add_argument('--num_val', default=4, type=int)
+parser.add_argument('--num_classes', default=2, type=int)
 
 
 def rescale_truncate(image):
@@ -307,19 +313,22 @@ def main():
 
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
-    ### hls data
+    ts_name=args.dataset
+    if 'PEV' in args.dataset or 'PFV' in args.dataset:
+        hls = True
+    else:
+        hls = False
+
     filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan01_PEV_ts'][()]
-        mask_arr = file['Tappan01_mask'][()]
+        ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+        mask_arr = file[f'{str(ts_name)}_mask'][()]
 
-    seq_length = 6
-    num_seq = 4
-    input_size = 64 ## 64
-    total_ts_len = 10 # L
+    input_size = args.img_dim
+    total_ts_len = args.ts_length # L
 
-    padding_size = 8
+    padding_size = args.pad_size
     
     # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
@@ -332,8 +341,8 @@ def main():
     # ts_arr = ts_arr[:,::-1,:,:]
 
     ## get different chips in the Tappan Square for multiple time series
-    num_chips = 40 # I
-    num_val=4
+    num_chips=args.num_chips # I
+    num_val=args.num_val
 
     # h_list_train =[10,20]
     # w_list_train =[15,25]
@@ -349,8 +358,6 @@ def main():
     for i in range(num_chips+num_val):
         ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
         ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-        # for j in range(ts.shape[0]):
-        #     ts[j] = rescale_image(ts[j])
 
         ts = rescale_image(ts)
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
@@ -367,19 +374,26 @@ def main():
     print(f"train ts set shape: {train_ts_set.shape}")
     print(f"train mask set shape: {train_mask_set.shape}")
 
-        
     ### dpc model ###
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model_option = "convlstm"
-    if model_option == 'convlstm':
+    model_option = args.model
+    if model_option == "convlstm":
         model = ConvLSTM_Seg(
-            num_classes=2,
+            num_classes=args.num_classes,
             input_size=(input_size,input_size),
             hidden_dim=160,
             input_dim=10,
             kernel_size=(3, 3)
+            )
+    elif model_option == "convgru":
+            model = ConvGRU_Seg(
+                num_classes=args.num_classes,
+                input_size=(input_size,input_size),
+                input_dim=10,
+                kernel_size=(3, 3),
+                hidden_dim=180,
             )
 
     # model = nn.DataParallel(model)
@@ -401,9 +415,8 @@ def main():
     # params = model.parameters()
     # optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
 
-    segment_optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
+    segment_optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
     args.old_lr = None
-
 
     ### load data ###
 
@@ -422,7 +435,7 @@ def main():
 
     train_seg_set = tsDataset(train_ts_set[:-num_val],  train_mask_set[:-num_val])
     val_seg_set = tsDataset(train_ts_set[-num_val:],  train_mask_set[-num_val:])
-    loader_args_1 = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
+    loader_args_1 = dict(batch_size=args.batch_size, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
     train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
     val_segment_dl = DataLoader(val_seg_set, **loader_args_1)
 
@@ -584,4 +597,5 @@ train-{args.train_what}{2}'.format(
 if __name__ == '__main__':
     main()
 
-    # python main.py --gpu 0 --net resnet18 --dataset ucf101 --batch_size 128 --img_dim 128 --epochs 100
+    # python models/train_benchmodel.py --model convlstm --dataset Tappan01 --img_dim 64 --epochs 100
+    # python models/train_benchmodel.py --model convgru --dataset Tappan01 --img_dim 64 --epochs 100

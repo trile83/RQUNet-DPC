@@ -10,6 +10,7 @@ import torch.nn.functional as F
 # sys.path.append('models/backbone/')
 from backbone.select_backbone import select_resnet
 from backbone.convrnn import ConvGRU
+# from benchmod.convgru import ConvGRU
 from unet.unet_vae import UNet_VAE_old
 from unet.unet_vae_RQ_scheme1_encoder import UNet_VAE_RQ_scheme1_encoder
 from unet.unet_test import UNet_test
@@ -70,10 +71,21 @@ class DPC_RNN_UNet(nn.Module):
 
             print('Done with backbone! Initializing ConvGRU!')
 
+            ## DPC code | BlackSky Code
             self.agg = ConvGRU(input_size=self.param['feature_size'],
                                hidden_size=128,
                                kernel_size=3,
                                num_layers=self.param['num_layers'])
+            
+            ## UTAE paper ConvGRU code
+            # self.agg = ConvGRU(
+            #         input_dim=self.param['feature_size'],
+            #         input_size=(64,64),
+            #         hidden_dim=128,
+            #         kernel_size=(3,3),
+            #         num_layers=self.param['num_layers'],
+            #         return_all_layers=False,
+            #     )
 
             print('Done with ConvGRU!')
 
@@ -82,11 +94,6 @@ class DPC_RNN_UNet(nn.Module):
 
             self.param['num_layers'] = 1 # param for GRU
             self.param['hidden_size'] = self.param['feature_size'] # param for GRU # 1024 for resnet50, 256 for resnet18
-
-            # self.agg = ConvGRU(input_size=self.param['feature_size'],
-            #                        hidden_size=128,
-            #                        kernel_size=3,
-            #                        num_layers=self.param['num_layers'])
         
             self.agg = ConvGRU(input_size=self.param['feature_size'],
                                 hidden_size=self.param['hidden_size'],

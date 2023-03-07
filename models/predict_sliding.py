@@ -28,15 +28,17 @@ import xarray as xr
 from inference import inference
 from tensorboardX import SummaryWriter
 from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
+from benchmod.convgru import ConvGRU_Seg
 
+torch.cuda.empty_cache()
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
 parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
-parser.add_argument('--dataset', default='hls', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
-parser.add_argument('--seq_len', default=4, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=6, type=int, help='number of video blocks')
+parser.add_argument('--dataset', default='Tappan01', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
+parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=64, type=int)
@@ -52,6 +54,9 @@ parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
 parser.add_argument('--img_dim', default=64, type=int)
+parser.add_argument('--ts_length', default=10, type=int)
+parser.add_argument('--pad_size', default=0, type=int)
+parser.add_argument('--num_classes', default=2, type=int)
 
 
 def rescale_truncate(image):
@@ -270,8 +275,12 @@ def main():
 
         with h5py.File(filename, "r") as file:
             print("Keys: %s" % file.keys())
-            ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-            mask_arr = file[f'{str(ts_name)}_mask'][()]
+            if ts_name == 'Tappan06' or ts_name == 'Tappan07':
+                ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
+                mask_arr = file[f'{str(ts_name)}_mask'][()]
+            else:
+                ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+                mask_arr = file[f'{str(ts_name)}_mask'][()]
 
     else:
         # ts_name = 'PEV_2021'
@@ -280,7 +289,6 @@ def main():
             print("Keys: %s" % file.keys())
             ts_arr = file[f'{str(ts_name)}_ts'][()]
             mask_arr = file[f'{str(ts_name)}_ts'][()]
-
 
         ts_arr = np.transpose(ts_arr, (0,3,1,2))
         mask_arr = ts_arr
@@ -296,10 +304,10 @@ def main():
 
         print('reference image shape: ', ref_im.shape)
 
-    input_size = 64
-    total_ts_len = 10 # L
+    input_size = args.img_dim
+    total_ts_len = args.ts_length # L
 
-    padding_size = 0
+    padding_size = args.pad_size
 
     print(f'data dict {ts_name} ts shape: {ts_arr.shape}')
     print(f'data dict {ts_name} mask shape: {mask_arr.shape}')
@@ -309,22 +317,19 @@ def main():
         train_ts_set = ts_arr[:total_ts_len,1:-2,:,:]
     else:
         train_ts_set = ts_arr[:,1:-2,:,:]
-    # train_ts_set = train_ts_set.reshape((1,T,C,H,W))
     
-    
-    # ignore the no-data edge of cut Tappan Square to HSL
+    # ignore the no-data edge of cut Tappan Square to HLS
     if not hls:
         if ts_name == 'Tappan02' or ts_name == 'Tappan04':
-            train_ts_set = ts_arr[:total_ts_len,1:-2,1:-1,1:160]
+            train_ts_set = ts_arr[:,1:-2,1:-1,1:160]
         else:
-            train_ts_set = ts_arr[:total_ts_len,1:-2,1:-1,1:-1]
-        
+            train_ts_set = ts_arr[:,1:-2,1:-1,1:-1]
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    unet_option = args.model # 'dpc-unet' and 'unet', convlstm
+    model_option = args.model # 'dpc-unet' and 'unet', convlstm
 
-    if unet_option == 'unet':
+    if model_option == 'unet':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
         unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
 
@@ -347,7 +352,7 @@ def main():
         prediction = inference.sliding_window_tiler(
             xraster=temporary_tif,
             model=unet_segment,
-            n_classes=2,
+            n_classes=args.num_classes,
             overlap=0.5,
             batch_size=128,
             standardization='local',
@@ -355,14 +360,14 @@ def main():
             std=0,
             normalize=10000.0,
             rescale=None,
-            model_option=unet_option
+            model_option=model_option
         )
     
-    elif unet_option == 'convlstm':
+    elif model_option == 'convlstm':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
         model = ConvLSTM_Seg(
-            num_classes=2,
-            input_size=(64,64),
+            num_classes=args.num_classes,
+            input_size=(input_size,input_size),
             hidden_dim=160,
             input_dim=10,
             kernel_size=(3, 3)
@@ -396,10 +401,51 @@ def main():
             std=0,
             normalize=10000.0,
             rescale=None,
-            model_option=unet_option
+            model_option=model_option
         )
 
-    elif unet_option == 'dpc-unet':
+    elif model_option == 'convgru':
+        model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+        model = ConvGRU_Seg(
+                num_classes=args.num_classes,
+                input_size=(input_size,input_size),
+                input_dim=10,
+                kernel_size=(3, 3),
+                hidden_dim=180,
+            )
+ 
+        ### 10 bands
+        model_checkpoint = f'{str(model_dir)}convgru_10band_epoch_90.pth'
+        if torch.cuda.is_available():
+            model = model.to(cuda)
+
+        model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
+
+        xraster = train_ts_set
+
+        if hls:
+            xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000) # 2000 is the optimal value for the nodata
+        else:
+            xraster = rescale_image(xraster[:10,:,:,:])
+            # temporary_tif = xr.where(xraster > -9000, xraster, 120)
+
+        # temporary_tif = rescale_image(temporary_tif)
+
+        prediction = inference.sliding_window_tiler(
+            xraster=xraster,
+            model=model,
+            n_classes=2,
+            overlap=0.5,
+            batch_size=16,
+            standardization='local',
+            mean=0,
+            std=0,
+            normalize=10000.0,
+            rescale=None,
+            model_option=model_option
+        )
+
+    elif model_option == 'dpc-unet':
 
         network = args.net # 'resnet50', 'unet-vae', 'rqunet-vae-encoder', 'unet'
         if network == 'unet':
@@ -418,10 +464,10 @@ def main():
 
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
 
-        ### 13 bands
+        ### 10 bands
         if network == 'unet':
-            model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
-            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder_10band_ts01_epoch26.pth'
+            # model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
+            model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder-0306_10band_ts01_epoch14.pth'
         else:
             model_checkpoint = f'{str(model_dir)}dpc-unet_10band_ts01_epoch7.pth'
 
@@ -445,15 +491,15 @@ def main():
 
         ## visualize
 
-        xraster = rescale_image(train_ts_set[:10,:,:,:]) # previously works 02-15
-        # xraster = train_ts_set[:10,:,:,:]
+        xraster = rescale_image(train_ts_set[:,:,:,:]) # previously works 02-15
+        # xraster = train_ts_set[:,:,:,:]
 
         # print('ts xraster min', np.min(xraster))
         
         if hls:
             temporary_tif = xr.where(xraster > -9000, xraster, 2000) # 2000 is the optimal value for the nodata
         else:
-            temporary_tif = xr.where(xraster > -9000, xraster, 2000)
+            temporary_tif = xraster[:10]
 
         # temporary_tif = rescale_image(temporary_tif)
 
@@ -468,7 +514,7 @@ def main():
             std=0,
             normalize=10000.0,
             rescale=None,
-            model_option=unet_option
+            model_option=model_option
         )
 
     if hls:
@@ -507,7 +553,10 @@ def main():
     plt.title(f"Segmentation Prediction")
     image = prediction
     plt.imshow(image)
-    plt.savefig(f"{str(data_dir)}{ts_name}-{unet_option}-new.png", dpi=300, bbox_inches='tight')
+    if model_option == 'dpc-unet':
+        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}.png", dpi=300, bbox_inches='tight')
+    else:
+        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}.png", dpi=300, bbox_inches='tight')
 
     plt.close()
 
@@ -531,7 +580,7 @@ def main():
         # prediction = prediction.where(xraster != -9999)
 
         prediction.attrs['long_name'] = ('otcb')
-        prediction.attrs['model_name'] = (unet_option)
+        prediction.attrs['model_name'] = (model_option)
         prediction = prediction.transpose("band", "y", "x")
 
         # Set nodata values on mask
@@ -545,7 +594,7 @@ def main():
 
         # Save COG file to disk
         prediction.rio.to_raster(
-            f'{data_dir}{ts_name}-{unet_option}.tiff',
+            f'{data_dir}{ts_name}-{model_option}.tiff',
             BIGTIFF="IF_SAFER",
             compress='LZW',
             # num_threads='all_cpus',
@@ -579,4 +628,6 @@ def predict_dpc(data_loader, dpc_model):
 if __name__ == '__main__':
     main()
 
-    # python models/predict_sliding.py --gpu 0 --net unet --model convlstm --dataset Tappan13
+    # python models/predict_sliding.py --gpu 0 --model convlstm --dataset Tappan13
+    # python models/predict_sliding.py --gpu 0 --model convgru --dataset Tappan13
+    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet-vae --dataset Tappan16

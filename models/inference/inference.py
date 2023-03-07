@@ -301,13 +301,9 @@ def reverse_seq(window, seq_length):
 def train_dpc(input_seq, dpc_model):
 
     dpc_model.train()
-    global iteration
 
     (B,N,SL,C,H,W) = input_seq.shape
-
-    input_seq = input_seq.to(cuda, dtype=torch.float32)
-    B = input_seq.size(0)
-
+    input_seq = input_seq
     features, _ = dpc_model(input_seq)
 
     return features.cpu().detach()
@@ -324,12 +320,9 @@ def train_dpc_poisson(data_loader, dpc_model):
         # print(f'id: {idx}')
         input_seq = input["x"]
 
-        (B,N,SL,C,H,W) = input_seq.shape
         input_seq = input_seq.to(cuda, dtype=torch.float32)
-        B = input_seq.size(0)
 
         features = dpc_model(input_seq)
-
         feature_lst.append(features)
 
     feature_arr = torch.cat(feature_lst, dim=0)
@@ -532,10 +525,10 @@ def sliding_window_tiler(
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # print("batch shape", batch.shape)
-            for i in range(batch.shape[1]):
-                batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+            batch = rescale_image(batch)
 
-            # batch = rescale_image(batch)
+            # for i in range(batch.shape[1]):
+            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
 
             # Standardize
             # batch = batch / normalize
@@ -547,7 +540,7 @@ def sliding_window_tiler(
             # DPC:
             im_set = get_seq(batch, seq_length)
             new_set = get_chunks(im_set, num_seq)
-            new_set = torch.Tensor(new_set).to(cuda, dtype=torch.float32)
+            new_set = torch.tensor(new_set).to(cuda, dtype=torch.float32)
             # print('new_set shape: ', new_set.shape)
 
             (I,L2,N,SL,C,H,W) = new_set.shape

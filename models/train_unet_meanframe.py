@@ -26,26 +26,31 @@ from tensorboardX import SummaryWriter
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--net', default='resnet18', type=str)
-parser.add_argument('--model', default='unet', type=str)
-parser.add_argument('--dataset', default='ucf101', type=str)
-parser.add_argument('--seq_len', default=5, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=8, type=int, help='number of video blocks')
+parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
+parser.add_argument('--model', default='unet', type=str, help='unet')
+parser.add_argument('--dataset', default='Tappan01', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
+parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=64, type=int)
-parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
+parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
-parser.add_argument('--start_epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
+parser.add_argument('--epochs', default=50, type=int, help='number of total epochs to run')
+parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--img_dim', default=32, type=int)
+parser.add_argument('--img_dim', default=64, type=int)
+parser.add_argument('--ts_length', default=10, type=int)
+parser.add_argument('--pad_size', default=0, type=int)
+parser.add_argument('--num_classes', default=2, type=int)
+parser.add_argument('--num_chips', default=40, type=int)
+parser.add_argument('--num_val', default=4, type=int)
 
 
 def rescale_truncate(image):
@@ -313,12 +318,10 @@ def main():
         ts_arr = file['Tappan01_PEV_ts'][()]
         mask_arr = file['Tappan01_mask'][()]
 
-    seq_length = 6
-    num_seq = 4
-    input_size = 64 ## 64
-    total_ts_len = 10 # L
+    input_size = args.img_dim ## 64
+    total_ts_len = args.ts_length # L
 
-    padding_size = 8
+    padding_size = args.pad_size
     
     # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
     # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
@@ -326,13 +329,9 @@ def main():
     train_ts_set = []
     train_mask_set = []
 
-    ### get RGB image
-    # ts_arr = ts_arr[:,1:4,:,:]
-    # ts_arr = ts_arr[:,::-1,:,:]
-
     ## get different chips in the Tappan Square for multiple time series
-    num_chips = 11 # I
-    num_val=1
+    num_chips = args.num_chips # I
+    num_val = args.num_val
 
     h_list_train =[10,20]
     w_list_train =[15,25]
@@ -342,12 +341,12 @@ def main():
     temp_ts_set = []
     temp_mask_set = []
 
-    for i in range(len(h_list_train)):
-        ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
+    # for i in range(len(h_list_train)):
+    #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
 
-    # for i in range(num_chips+num_val):
-    #     ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-        ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+    for i in range(num_chips+num_val):
+        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+        ts = np.squeeze(ts)
         for j in range(ts.shape[0]):
             ts[j] = rescale_image(ts[j])
         mask = mask.reshape((mask.shape[1],mask.shape[2]))
@@ -369,21 +368,8 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_1028_3band_unetvae_hls_65_2.7782891265815123e-07.pth'
-    # model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0927_13band_unetvae_hls_8_0.00016154855853173791.pth'
-
-    # model = DPC_RNN_UNet(sample_size=64,
-    #                 device=device,
-    #                 num_seq=4, 
-    #                 seq_len=6, 
-    #                 network='unet-vae',
-    #                 # network="rqunet-vae-encoder",
-    #                 pred_step=1,
-    #                 model_weight=model_checkpoint,
-    #                 freeze=True)
-
     # unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=13)
-    unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
+    unet_segment = UNet_test(num_classes=args.num_classes,segment=True,in_channels=10)
     # unet_segment = UNet3D(in_channel=5, n_classes=2)
 
     # model = nn.DataParallel(model)
@@ -486,7 +472,7 @@ def main():
                             'state_dict': unet_segment.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_1train_9band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_1train_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
 
     plt.plot(train_loss_lst, color ="blue")
     plt.plot(val_loss_lst, color = "red")
@@ -534,11 +520,6 @@ def train_segment(data_loader, segment_model, optimizer):
 
         loss = criterion(mask_pred, input_mask)
 
-        # losses.update(loss['loss'].item(), B)
-        # optimizer.zero_grad()
-        # loss['loss'].backward()
-        # optimizer.step()
-
         losses.update(loss.item(), B)
         optimizer.zero_grad()
         loss.backward()
@@ -550,8 +531,6 @@ def train_segment(data_loader, segment_model, optimizer):
 
 def val_segment(data_loader, segment_model, optimizer):
     losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
     segment_model.eval()
     global iteration
 
@@ -569,9 +548,6 @@ def val_segment(data_loader, segment_model, optimizer):
             features = features.view(batch,F,H,W)
             input_mask = input_mask.view(batch,H,W)
 
-            # print(f"features shape: {features.shape}")
-            # print(f"mask shape: {input_mask.shape}")
-
             mask_pred, _ = segment_model(features)
 
             # print(f"mask pred shape: {mask_pred.shape}")
@@ -583,31 +559,6 @@ def val_segment(data_loader, segment_model, optimizer):
 
     # return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
     return losses.local_avg
-
-
-def predict_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.eval()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['x'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,F,H,W) = features.shape
-        batch = 1
-
-        # features = features.view(B*N,SL,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        mask_pred, _ = segment_model(features)
-
-    return mask_pred
 
 
 def set_path(args):
