@@ -12,6 +12,7 @@ import os
 import glob
 from dpc.model_3d import *
 from dpc.model_3d_unet import *
+from dpc.model_3d_unet_stride import *
 from backbone.resnet_2d3d import neq_load_customized
 from utils.augmentation import *
 from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy, calc_accuracy
@@ -37,10 +38,10 @@ parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
-parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
+parser.add_argument('--wd', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=50, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -53,6 +54,9 @@ parser.add_argument('--pad_size', default=0, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
 parser.add_argument('--num_chips', default=40, type=int)
 parser.add_argument('--num_val', default=4, type=int)
+parser.add_argument('--standardization', default='local', type=str)
+parser.add_argument('--normalization', default=0.0001, type=float)
+parser.add_argument('--rescale', default='per-ts', type=str)
 
 def rescale_truncate(image):
     if np.amin(image) < 0:
@@ -66,7 +70,11 @@ def rescale_truncate(image):
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
 
-def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+def rescale_image(
+            image: np.ndarray,
+            rescale_type: str = 'per-image',
+            highest_value: int = 1
+        ):
     """
     Rescale image [0, 1] per-image or per-channel.
     Args:
@@ -76,15 +84,63 @@ def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
         rescaled np.ndarray
     """
     image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
     if rescale_type == 'per-image':
+        image = (image - np.min(image, initial=highest_value, where=mask)) \
+            / (np.max(image, initial=highest_value, where=mask)
+                - np.min(image, initial=highest_value, where=mask))
+    elif rescale_type == 'per-ts':
         image = (image - np.min(image)) / (np.max(image) - np.min(image))
+
     elif rescale_type == 'per-channel':
         for i in range(image.shape[-1]):
             image[:, :, i] = (
-                image[:, :, i] - np.min(image[:, :, i])) / \
-                (np.max(image[:, :, i]) - np.min(image[:, :, i]))
+                image[:, :, i]
+                - np.min(image[:, :, i], initial=highest_value, where=mask)) \
+                / (np.max(image[:, :, i], initial=highest_value, where=mask)
+                    - np.min(
+                        image[:, :, i], initial=highest_value, where=mask))
     else:
         logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
+
+def standardize_image(
+    image,
+    standardization_type: str,
+    mean: list = None,
+    std: list = None
+):
+    """
+    Standardize image within parameter, simple scaling of values.
+    Loca, Global, and Mixed options.
+    """
+    image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
+    if standardization_type == 'local':
+        for i in range(image.shape[0]):
+            image[i, :, :] = (
+                image[i, :, :] - np.mean(image[i, :, :], where=mask)) / \
+                (np.std(image[i, :, :], where=mask) + 1e-8)
+    elif standardization_type == 'global':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (image[:, :, i] - mean[i]) / (std[i] + 1e-8)
+    elif standardization_type == 'mixed':
+        raise NotImplementedError
+    return image
+
+def normalize_image(image: np.ndarray, normalize: float):
+    """
+    Normalize image within parameter, simple scaling of values.
+    Args:
+        image (np.ndarray): array to normalize
+        normalize (float): float value to normalize with
+    Returns:
+        normalized np.ndarray
+    """
+    if normalize:
+        image = image / normalize
     return image
 
 class satDataset(Dataset):
@@ -360,6 +416,10 @@ def main():
     num_val = args.num_val
     num_chips = args.num_chips
 
+    # Preprocess parameters
+    standardization = args.standardization
+    normalization = args.normalization
+
     temp_ts_set = []
     temp_mask_set = []
     # for i in range(len(h_list_train)):
@@ -371,8 +431,23 @@ def main():
         if np.any(ts == -9999):
             continue
         ts = np.squeeze(ts)
-        ts = rescale_image(ts)
 
+        if args.rescale == 'per-ts':
+            # for frame in range(ts.shape[0]):
+            #     if args.normalization is not None:
+            #         ts[frame] = normalize_image(ts[frame], args.normalization)
+            ts = rescale_image(ts, args.rescale)
+        else:
+            for frame in range(ts.shape[0]):
+                if args.normalization is not None:
+                    ts[frame] = normalize_image(ts[frame], args.normalization)
+
+                if args.rescale is not None:
+                    ts[frame] = rescale_image(ts[frame],args.rescale)
+
+                if args.standardization is not None:
+                    ts[frame] = standardize_image(ts[frame],args.standardization)
+            
         t_im = np.transpose(ts[0], (1,2,0))
         t_im = rescale_truncate(t_im[:,:,:3])
         plt.imshow(t_im)
@@ -429,7 +504,16 @@ def main():
     elif network == 'unet-vae':
         model_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/recon_0217_10band_unetvae_hls_64_97_2.0649683759061257e-05.pth' # unet-vae
 
-    model = DPC_RNN_UNet(sample_size=input_size,
+    # model = DPC_RNN_UNet(sample_size=input_size,
+    #                 device=device,
+    #                 num_seq=args.num_seq, 
+    #                 seq_len=args.seq_len, 
+    #                 network=network,
+    #                 pred_step=1,
+    #                 model_weight=model_checkpoint,
+    #                 freeze=True)
+    
+    model = DPC_RNN(sample_size=input_size,
                     device=device,
                     num_seq=args.num_seq, 
                     seq_len=args.seq_len, 
@@ -438,7 +522,6 @@ def main():
                     model_weight=model_checkpoint,
                     freeze=True)
 
-    # unet_segment = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
 
     if torch.cuda.is_available():
         model = model.to(cuda)
@@ -503,7 +586,7 @@ def main():
 
                 (I,L2,N,SL,C,H,W) = input_ts.shape
 
-                input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
+                # input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
 
                 train_set = satDataset(input_ts, input_mask, ori_ts)
 
@@ -523,7 +606,7 @@ def main():
                 # print(f'val input ts shape: {input_ts.shape}')
                 # print(f'val input mask shape: {input_mask.shape}')
 
-                input_ts_val = rearrange(input_ts_val, "b l2 n sl c h w -> (b l2) n sl c h w")
+                # input_ts_val = rearrange(input_ts_val, "b l2 n sl c h w -> (b l2) n sl c h w")
                 val_set = satDataset(input_ts_val, input_mask_val, ori_ts_val)
 
                 loader_args_sat = dict(batch_size=1, num_workers=4, pin_memory=False, drop_last=False, shuffle=False)
@@ -543,48 +626,51 @@ def main():
             if is_best:
                 min_loss = val_losses.local_avg
 
+                 # visualize predictions
+                index_array = torch.argmax(output_val, dim=1)
+                z = ori_ts_val.numpy()
+                y = input_mask_val
+
+                plt.figure(figsize=(20,20))
+                plt.subplot(1,3,1)
+                plt.title("Image")
+                image = np.transpose(z[0,5,:3,:,:], (1,2,0))
+                # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+                image = rescale_truncate(image)
+                plt.imshow(image)
+                # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
+                plt.subplot(1,3,2)
+                plt.title("Segmentation Label")
+                image = np.transpose(y[0,:,:], (0,1))
+                plt.imshow(image)
+                # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
+                plt.subplot(1,3,3)
+                plt.title(f"Segmentation Prediction")
+                image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
+                plt.imshow(image)
+                plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-pred.png")
+                plt.close()
+
+
                 # save dpc weights
                 save_checkpoint({'epoch': epoch+1,
                                 'net': args.net,
                                 'state_dict': model.state_dict(),
                                 'min_loss': min_loss,
                                 'optimizer': optimizer.state_dict()}, 
-                                is_best, filename=os.path.join(model_dir, f'dpc-unet-{network}-encoder-0306_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_dir, f'dpc-rnn-{network}-encoder-0319_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
-            print(f"train loss: {train_losses.local_avg}")
-            print(f"val loss: {val_losses.local_avg}")
+            # print(f"train loss: {train_losses.local_avg}")
+            # print(f"val loss: {val_losses.local_avg}")
+            print(f"epoch: {epoch+1} train loss: {train_loss} val loss: {val_loss}")
 
-            # visualize predictions
-            index_array = torch.argmax(output_val, dim=1)
-            z = ori_ts_val.numpy()
-            y = input_mask_val
-
-            plt.figure(figsize=(20,20))
-            plt.subplot(1,3,1)
-            plt.title("Image")
-            image = np.transpose(z[0,5,:3,:,:], (1,2,0))
-            # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-            image = rescale_truncate(image)
-            plt.imshow(image)
-            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
-            plt.subplot(1,3,2)
-            plt.title("Segmentation Label")
-            image = np.transpose(y[0,:,:], (0,1))
-            plt.imshow(image)
-            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
-            plt.subplot(1,3,3)
-            plt.title(f"Segmentation Prediction")
-            image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
-            plt.imshow(image)
-            plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-pred.png")
-            plt.close()
-
+           
 
         plt.plot(train_loss_out, color ="blue")
         plt.plot(val_loss_out, color = "red")
-        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0217.png")
+        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0319.png")
         plt.close()
 
         print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
@@ -656,7 +742,7 @@ def train_dpc(data_loader, dpc_model, optimizer, network):
         input_seq = input["x"]
         input_mask = input["mask"]
 
-        (B,N,SL,C,H,W) = input_seq.shape
+        (B,L2,N,SL,C,H,W) = input_seq.shape
 
         input_seq = input_seq.to(cuda, dtype=torch.float32)
         input_mask = input_mask.to(cuda, dtype=torch.long)
@@ -691,7 +777,7 @@ def val_dpc(data_loader, dpc_model, network):
             input_seq = input_seq.to(cuda, dtype=torch.float32)
             input_mask = input_mask.to(cuda, dtype=torch.long)
 
-            (B,N,SL,C,H,W) = input_seq.shape
+            (B,L2,N,SL,C,H,W) = input_seq.shape
 
             # print(f'input mask shape : {input_mask.shape}') # 1 x batch x input_size x input_size
             
@@ -1015,5 +1101,5 @@ train-{args.train_what}{2}'.format(
 if __name__ == '__main__':
     main()
 
-    # torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
     # python models/train_dpc_seg.py --net unet-vae --dataset Tappan01 --epochs 100

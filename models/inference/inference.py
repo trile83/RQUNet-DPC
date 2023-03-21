@@ -17,7 +17,11 @@ def window2d(window_func, window_size, **kwargs):
     window = np.matrix(window_func(M=window_size, sym=False, **kwargs))
     return window.T.dot(window)
 
-def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+def rescale_image(
+            image: np.ndarray,
+            rescale_type: str = 'per-image',
+            highest_value: int = 1
+        ):
     """
     Rescale image [0, 1] per-image or per-channel.
     Args:
@@ -27,28 +31,26 @@ def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
         rescaled np.ndarray
     """
     image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
     if rescale_type == 'per-image':
+        image = (image - np.min(image, initial=highest_value, where=mask)) \
+            / (np.max(image, initial=highest_value, where=mask)
+                - np.min(image, initial=highest_value, where=mask))
+    elif rescale_type == 'per-ts':
         image = (image - np.min(image)) / (np.max(image) - np.min(image))
+
     elif rescale_type == 'per-channel':
-        for i in range(image.shape[0]):
-            image[i, :, :] = (
-                image[i, :, :] - np.min(image[i, :, :])) / \
-                (np.max(image[i, :, :]) - np.min(image[i, :, :]))
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (
+                image[:, :, i]
+                - np.min(image[:, :, i], initial=highest_value, where=mask)) \
+                / (np.max(image[:, :, i], initial=highest_value, where=mask)
+                    - np.min(
+                        image[:, :, i], initial=highest_value, where=mask))
     else:
         logging.info(f'Skipping based on invalid option: {rescale_type}')
     return image
-
-def rescale_truncate(image):
-    if np.amin(image) < 0:
-        image = np.where(image < 0,0,image)
-    if np.amax(image) > 1:
-        image = np.where(image > 1,1,image) 
-
-    map_img =  np.zeros(image.shape)
-    for band in range(3):
-        p2, p98 = np.percentile(image[:,:,band], (2, 98))
-        map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
-    return map_img
 
 def standardize_image(
     image,
@@ -61,15 +63,31 @@ def standardize_image(
     Loca, Global, and Mixed options.
     """
     image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
     if standardization_type == 'local':
-        for i in range(image.shape[-1]):
-            image[:, :, i] = (image[:, :, i] - np.mean(image[:, :, i])) / \
-                (np.std(image[:, :, i]) + 1e-8)
+        for i in range(image.shape[0]):
+            image[i, :, :] = (
+                image[i, :, :] - np.mean(image[i, :, :], where=mask)) / \
+                (np.std(image[i, :, :], where=mask) + 1e-8)
     elif standardization_type == 'global':
         for i in range(image.shape[-1]):
             image[:, :, i] = (image[:, :, i] - mean[i]) / (std[i] + 1e-8)
     elif standardization_type == 'mixed':
         raise NotImplementedError
+    return image
+
+def normalize_image(image: np.ndarray, normalize: float):
+    """
+    Normalize image within parameter, simple scaling of values.
+    Args:
+        image (np.ndarray): array to normalize
+        normalize (float): float value to normalize with
+    Returns:
+        normalized np.ndarray
+    """
+    if normalize:
+        image = image / normalize
     return image
 
 
@@ -301,8 +319,6 @@ def reverse_seq(window, seq_length):
 def train_dpc(input_seq, dpc_model):
 
     dpc_model.train()
-
-    (B,N,SL,C,H,W) = input_seq.shape
     input_seq = input_seq
     features, _ = dpc_model(input_seq)
 
@@ -348,7 +364,7 @@ def get_feature_arr(new_set, train_mask_set, model, num_seq, seq_length):
 
         (I,L2,N,SL,C,H,W) = input_ts.shape
 
-        input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
+        # input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
 
         # print(f"input ts shape {input_ts.shape}")
         # print(f"input mask shape {input_mask.shape}")
@@ -390,7 +406,7 @@ def sliding_window_tiler(
             mean=None,
             std=None,
             window: str = 'triang',  # 'overlap-tile',
-            normalize=10000.0,
+            normalize: float = 0.0001,
             rescale=None,
             model_option='unet'
         ):
@@ -410,7 +426,7 @@ def sliding_window_tiler(
 
     tile_size = 64
     tile_channels = 10
-    seq_length = 5
+    seq_length = 6
     num_seq = 4
     global cuda; cuda = torch.device('cuda')
     # n_classes = out of the output layer, output_shape
@@ -525,28 +541,41 @@ def sliding_window_tiler(
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # print("batch shape", batch.shape)
-            batch = rescale_image(batch)
-
-            # for i in range(batch.shape[1]):
-            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+            # batch = rescale_image(batch)
 
             # Standardize
-            # batch = batch / normalize
+            
+            if rescale == 'per-ts':
+                # for i in range(batch.shape[1]):
+                #     if normalize is not None:
+                #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+                batch = rescale_image(batch, rescale)
+            else:
+                for i in range(batch.shape[1]):
+                    batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
 
-            # if standardization is not None:
-            #     for i in range(batch.shape[1]):
-            #         batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
+                if rescale is not None:
+                    for i in range(batch.shape[1]):
+                        batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
 
+                if standardization is not None:
+                    for i in range(batch.shape[1]):
+                        batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
+            
             # DPC:
             im_set = get_seq(batch, seq_length)
             new_set = get_chunks(im_set, num_seq)
             new_set = torch.tensor(new_set).to(cuda, dtype=torch.float32)
             # print('new_set shape: ', new_set.shape)
 
+            del im_set
+
             (I,L2,N,SL,C,H,W) = new_set.shape
 
-            new_set = rearrange(new_set, "i l2 n sl c h w -> (i l2) n sl c h w")
+            # new_set = rearrange(new_set, "i l2 n sl c h w -> (i l2) n sl c h w")
             output = train_dpc(new_set, model)
+
+            del new_set
             
             # batch = np.moveaxis(batch, -1, 1)
             # print("AFTER PREDICT", batch.shape, batch_id)
@@ -560,8 +589,16 @@ def sliding_window_tiler(
             # print("batch shape", batch.shape)
             # batch = rescale_image(batch)
 
-            # for i in range(batch.shape[1]):
-            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+            for i in range(batch.shape[1]):
+                batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+
+            if rescale is not None:
+                for i in range(batch.shape[1]):
+                    batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
+
+            if standardization is not None:
+                for i in range(batch.shape[1]):
+                    batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
 
             # DPC:
             im_set = get_seq(batch, seq_length=6) #(I,L1,SL,C,H,W)
@@ -581,10 +618,18 @@ def sliding_window_tiler(
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # Standardize
-            batch = rescale_image(batch)
+            # batch = rescale_image(batch)
 
-            # if standardization is not None:
-                # batch = standardize_batch(batch, standardization)
+            for i in range(batch.shape[1]):
+                batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+
+            if rescale is not None:
+                for i in range(batch.shape[1]):
+                    batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
+
+            if standardization is not None:
+                for i in range(batch.shape[1]):
+                    batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
 
             # print("AFTER STD", batch.shape)
 
@@ -605,10 +650,24 @@ def sliding_window_tiler(
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # Standardize
-            batch = rescale_image(batch)
+            # batch = rescale_image(batch)
 
-            # for i in range(batch.shape[1]):
-            #     batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:])
+            if rescale == 'per-ts':
+                # for i in range(batch.shape[1]):
+                #     if normalize is not None:
+                #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+                batch = rescale_image(batch, rescale)
+            else:
+                for i in range(batch.shape[1]):
+                    batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+
+                if rescale is not None:
+                    for i in range(batch.shape[1]):
+                        batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
+
+                if standardization is not None:
+                    for i in range(batch.shape[1]):
+                        batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
 
             # print("AFTER STD", batch.shape)
 

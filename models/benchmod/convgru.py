@@ -220,5 +220,6 @@ class ConvGRU_Seg(nn.Module):
         )  # BxT pad mask
         pad_mask = pad_mask if pad_mask.any() else None
         _, out = self.convgru_encoder(input, pad_mask=pad_mask)
+        print('out shape: ', out.shape)
         out = self.classification_layer(out)
         return out

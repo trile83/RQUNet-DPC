@@ -1,6 +1,8 @@
 import disstl.models as models
 import re
 import torch
+import time
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils import data
 from torch.utils.data import Dataset, DataLoader
@@ -10,8 +12,9 @@ from skimage import exposure
 from einops import rearrange
 import os
 import glob
-from dpc.model_3d import *
-from dpc.model_3d_unet import *
+# from dpc.model_3d import *
+from dpc.model_3d_unet import DPC_RNN_UNet
+from dpc.model_3d_unet_stride import DPC_RNN
 from backbone.resnet_2d3d import neq_load_customized
 from utils.augmentation import *
 from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy
@@ -21,7 +24,7 @@ import h5py
 import logging
 import cv2
 import csv
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, classification_report
+from sklearn.metrics import jaccard_score, balanced_accuracy_score, confusion_matrix, classification_report
 import rioxarray as rxr
 import rasterio
 import xarray as xr
@@ -29,6 +32,7 @@ from inference import inference
 from tensorboardX import SummaryWriter
 from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
 from benchmod.convgru import ConvGRU_Seg
+from unet.unet_test import UNet_test
 
 torch.cuda.empty_cache()
 torch.backends.cudnn.benchmark = True
@@ -57,6 +61,9 @@ parser.add_argument('--img_dim', default=64, type=int)
 parser.add_argument('--ts_length', default=10, type=int)
 parser.add_argument('--pad_size', default=0, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
+parser.add_argument('--standardization', default='local', type=str)
+parser.add_argument('--normalization', default=0.0001, type=float)
+parser.add_argument('--rescale', default='per-ts', type=str)
 
 
 def rescale_truncate(image):
@@ -71,7 +78,11 @@ def rescale_truncate(image):
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
 
-def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+def rescale_image(
+            image: np.ndarray,
+            rescale_type: str = 'per-image',
+            highest_value: int = 10000
+        ):
     """
     Rescale image [0, 1] per-image or per-channel.
     Args:
@@ -81,15 +92,47 @@ def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
         rescaled np.ndarray
     """
     image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
     if rescale_type == 'per-image':
-        image = (image - np.min(image)) / (np.max(image) - np.min(image))
+        image = (image - np.min(image, initial=highest_value, where=mask)) \
+            / (np.max(image, initial=highest_value, where=mask)
+                - np.min(image, initial=highest_value, where=mask))
     elif rescale_type == 'per-channel':
-        for i in range(image.shape[0]):
-            image[i, :, :] = (
-                image[i, :, :] - np.min(image[i, :, :])) / \
-                (np.max(image[i, :, :]) - np.min(image[i, :, :]))
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (
+                image[:, :, i]
+                - np.min(image[:, :, i], initial=highest_value, where=mask)) \
+                / (np.max(image[:, :, i], initial=highest_value, where=mask)
+                    - np.min(
+                        image[:, :, i], initial=highest_value, where=mask))
     else:
         logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
+
+def standardize_image(
+    image,
+    standardization_type: str,
+    mean: list = None,
+    std: list = None
+):
+    """
+    Standardize image within parameter, simple scaling of values.
+    Loca, Global, and Mixed options.
+    """
+    image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
+    if standardization_type == 'local':
+        for i in range(image.shape[0]):
+            image[i, :, :] = (
+                image[i, :, :] - np.mean(image[i, :, :], where=mask)) / \
+                (np.std(image[i, :, :], where=mask) + 1e-8)
+    elif standardization_type == 'global':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (image[:, :, i] - mean[i]) / (std[i] + 1e-8)
+    elif standardization_type == 'mixed':
+        raise NotImplementedError
     return image
 
 
@@ -246,10 +289,12 @@ def get_accuracy(y_pred, y_true):
     # get overall weighted accuracy
     accuracy = balanced_accuracy_score(y_true, y_pred, sample_weight=None)
     report = classification_report(y_true, y_pred, target_names=target_names, output_dict=True)
+    # iou_1 = jaccard_score(y_pred, y_true, average=None)
+    iou = jaccard_score(y_pred, y_true, pos_label=1, average='binary')
     precision = report['cropland']['precision']
     recall = report['cropland']['recall']
     f1_score = report['cropland']['f1-score']
-    return accuracy, precision, recall, f1_score
+    return accuracy, precision, recall, f1_score, iou
 
 
 def main():
@@ -278,9 +323,15 @@ def main():
             if ts_name == 'Tappan06' or ts_name == 'Tappan07':
                 ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
                 mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+                ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
+                ref_im = rxr.open_rasterio(ref_im_fl)
             else:
                 ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
                 mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+                ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PEV.2020275T112119.v2.0.tif"
+                ref_im = rxr.open_rasterio(ref_im_fl)
 
     else:
         # ts_name = 'PEV_2021'
@@ -317,17 +368,39 @@ def main():
         train_ts_set = ts_arr[:total_ts_len,1:-2,:,:]
     else:
         train_ts_set = ts_arr[:,1:-2,:,:]
+        
     
     # ignore the no-data edge of cut Tappan Square to HLS
     if not hls:
         if ts_name == 'Tappan02' or ts_name == 'Tappan04':
-            train_ts_set = ts_arr[:,1:-2,1:-1,1:160]
+            train_ts_set = ts_arr[:,1:-2,1:-2,1:160]
+            mask_arr = mask_arr[1:-2,1:160]
+        elif ts_name == 'Tappan05':
+            train_ts_set = ts_arr[:,1:-2,1:300,1:-2]
+            mask_arr = np.squeeze(
+                rxr.open_rasterio('/home/geoint/tri/senegal_hls_mask/Tappan05_WV02_20110430.tiff').values
+                )
+            mask_arr = mask_arr[1:300,1:-1]
+            mask_arr[mask_arr==1]=0
+            mask_arr[mask_arr==2]=1
+            mask_arr[mask_arr==3]=0
+            mask_arr[mask_arr==4]=0
+            mask_arr[mask_arr==5]=0
+            mask_arr[mask_arr==7]=0
+            plt.imshow(mask_arr)
+            plt.savefig('/home/geoint/tri/dpc/tappan05.png')
+            plt.close()
+            # print(mask_arr.shape)
         else:
-            train_ts_set = ts_arr[:,1:-2,1:-1,1:-1]
+            train_ts_set = ts_arr[:,1:-2,1:-2,1:-2]
+            mask_arr = mask_arr[1:-2,1:-2]
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model_option = args.model # 'dpc-unet' and 'unet', convlstm
+
+    standardization = args.standardization
+    normalization = args.normalization
 
     if model_option == 'unet':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
@@ -345,7 +418,7 @@ def main():
         if hls:
             temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
         else:
-            temporary_tif = xr.where(xraster > -9000, xraster, 120)
+            temporary_tif = xr.where(xraster > -9000, xraster, 2000)
 
         # temporary_tif = rescale_image(temporary_tif)
 
@@ -355,10 +428,10 @@ def main():
             n_classes=args.num_classes,
             overlap=0.5,
             batch_size=128,
-            standardization='local',
+            standardization=standardization,
             mean=0,
             std=0,
-            normalize=10000.0,
+            normalize=normalization,
             rescale=None,
             model_option=model_option
         )
@@ -374,7 +447,8 @@ def main():
             )
  
         ### 10 bands
-        model_checkpoint = f'{str(model_dir)}convlstm_10band_epoch_188.pth'
+        # model_checkpoint = f'{str(model_dir)}convlstm_10band_epoch_188.pth'
+        model_checkpoint = f'{str(model_dir)}convlstm_new_10band_epoch_56.pth'
         if torch.cuda.is_available():
             model = model.to(cuda)
 
@@ -383,23 +457,25 @@ def main():
         xraster = train_ts_set
 
         if hls:
-            xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000) # 2000 is the optimal value for the nodata
+            # 2000 is the optimal value for the nodata
+            xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000)
+            temporary_tif = xraster
         else:
-            xraster = rescale_image(xraster[:10,:,:,:])
-            # temporary_tif = xr.where(xraster > -9000, xraster, 120)
+            xraster = xraster[:10,:,:,:]
+            temporary_tif = xr.where(xraster > -9000, xraster, 1000)
 
         # temporary_tif = rescale_image(temporary_tif)
 
         prediction = inference.sliding_window_tiler(
-            xraster=xraster,
+            xraster=temporary_tif,
             model=model,
             n_classes=2,
             overlap=0.5,
-            batch_size=16,
-            standardization='local',
+            batch_size=8,
+            standardization=standardization,
             mean=0,
             std=0,
-            normalize=10000.0,
+            normalize=normalization,
             rescale=None,
             model_option=model_option
         )
@@ -415,7 +491,9 @@ def main():
             )
  
         ### 10 bands
-        model_checkpoint = f'{str(model_dir)}convgru_10band_epoch_90.pth'
+        # model_checkpoint = f'{str(model_dir)}convgru_10band_epoch_90.pth'
+        # model_checkpoint = f'{str(model_dir)}convgru_new_10band_epoch_66.pth'
+        model_checkpoint = f'{str(model_dir)}convgru_0320_10band_epoch_36.pth'
         if torch.cuda.is_available():
             model = model.to(cuda)
 
@@ -424,24 +502,27 @@ def main():
         xraster = train_ts_set
 
         if hls:
-            xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000) # 2000 is the optimal value for the nodata
+            # 2000 is the optimal value for the nodata
+            # xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000)
+            xraster = xraster[:10,:,:,:]
+            temporary_tif = xr.where(xraster > -9000, xraster, 1000) 
         else:
-            xraster = rescale_image(xraster[:10,:,:,:])
-            # temporary_tif = xr.where(xraster > -9000, xraster, 120)
+            xraster = xraster[:10,:,:,:]
+            temporary_tif = xr.where(xraster > -9000, xraster, 1000)
 
         # temporary_tif = rescale_image(temporary_tif)
 
         prediction = inference.sliding_window_tiler(
-            xraster=xraster,
+            xraster=temporary_tif,
             model=model,
             n_classes=2,
             overlap=0.5,
-            batch_size=16,
-            standardization='local',
+            batch_size=8,
+            standardization=standardization,
             mean=0,
             std=0,
-            normalize=10000.0,
-            rescale=None,
+            normalize=normalization,
+            rescale=args.rescale,
             model_option=model_option
         )
 
@@ -453,27 +534,40 @@ def main():
         else:
             encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0217_10band_unetvae_hls_64_97_2.0649683759061257e-05.pth' # unet-vae
 
-        model = DPC_RNN_UNet(sample_size=input_size,
-                        device=device,
-                        num_seq=4, 
-                        seq_len=6, 
-                        network=network,
-                        pred_step=1,
-                        model_weight=encoder_weight,
-                        freeze=True)
+        # model = DPC_RNN_UNet(sample_size=input_size,
+        #                 device=device,
+        #                 num_seq=4, 
+        #                 seq_len=6, 
+        #                 network=network,
+        #                 pred_step=1,
+        #                 model_weight=encoder_weight,
+        #                 freeze=True)
+        
+        model = DPC_RNN(sample_size=input_size,
+                    device=device,
+                    num_seq=args.num_seq, 
+                    seq_len=args.seq_len, 
+                    network=network,
+                    pred_step=1,
+                    model_weight=encoder_weight,
+                    freeze=True)
 
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
 
         ### 10 bands
         if network == 'unet':
             # model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
-            model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder-0306_10band_ts01_epoch14.pth'
+            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder-0306_10band_ts01_epoch14.pth'
+            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder-0317_10band_ts01_epoch41.pth'
+            model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0319_10band_ts01_epoch14.pth'
         else:
-            model_checkpoint = f'{str(model_dir)}dpc-unet_10band_ts01_epoch7.pth'
+            # model_checkpoint = f'{str(model_dir)}dpc-unet_10band_ts01_epoch7.pth'
+            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-vae-encoder-0307_10band_ts01_epoch14.pth'
+            model_checkpoint = f'{str(model_dir)}dpc-unet-unet-vae-encoder-0317_10band_ts01_epoch18.pth'
 
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
-        model = nn.DataParallel(model)
+        # model = nn.DataParallel(model)
 
         if torch.cuda.is_available():
             model = model.to(cuda)
@@ -491,8 +585,8 @@ def main():
 
         ## visualize
 
-        xraster = rescale_image(train_ts_set[:,:,:,:]) # previously works 02-15
-        # xraster = train_ts_set[:,:,:,:]
+        # xraster = rescale_image(train_ts_set[:,:,:,:]) # previously works 02-15
+        xraster = train_ts_set[:,:,:,:]
 
         # print('ts xraster min', np.min(xraster))
         
@@ -500,6 +594,9 @@ def main():
             temporary_tif = xr.where(xraster > -9000, xraster, 2000) # 2000 is the optimal value for the nodata
         else:
             temporary_tif = xraster[:10]
+            temporary_tif = xr.where(temporary_tif > -9000, temporary_tif, 2000)
+
+            print('temp tif shape: ', temporary_tif.shape)
 
         # temporary_tif = rescale_image(temporary_tif)
 
@@ -509,16 +606,17 @@ def main():
             n_classes=2,
             overlap=0.5,
             batch_size=1,
-            standardization='local',
+            standardization=standardization,
             mean=0,
             std=0,
-            normalize=10000.0,
-            rescale=None,
+            normalize=normalization,
+            rescale=args.rescale,
             model_option=model_option
         )
 
-    if hls:
-        ref_im = ref_im.transpose("y", "x", "band")
+    ref_im = ref_im.transpose("y", "x", "band")
+    print(f'ref im shape: {ref_im.shape}')
+    (h,w,c) = ref_im.shape
 
     if prediction.shape[0] > 1:
         prediction = np.argmax(prediction, axis=0)
@@ -526,6 +624,10 @@ def main():
         prediction = np.squeeze(
             np.where(prediction > 0.5, 1, 0).astype(np.int16)
         )
+
+    if not hls:
+        accuracy, precision, recall, f1_score, iou = get_accuracy(prediction, mask_arr)
+        print(f'accuracy {accuracy} precision {precision} recall {recall} f1_score {f1_score} mIoU {iou}')
 
     print('prediction shape after final process: ', prediction.shape)
 
@@ -554,21 +656,21 @@ def main():
     image = prediction
     plt.imshow(image)
     if model_option == 'dpc-unet':
-        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}-new.png", dpi=300, bbox_inches='tight')
     else:
         plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}.png", dpi=300, bbox_inches='tight')
 
     plt.close()
 
     #save Tiff file output
-    if hls:
-        # Drop image band to allow for a merge of mask
-        ref_im = ref_im.drop(
-            dim="band",
-            labels=ref_im.coords["band"].values[1:],
-            drop=True
-        )
+    # Drop image band to allow for a merge of mask
+    ref_im = ref_im.drop(
+        dim="band",
+        labels=ref_im.coords["band"].values[1:],
+        drop=True
+    )
 
+    if hls:
         prediction = xr.DataArray(
                     np.expand_dims(prediction, axis=-1),
                     name='otcb',
@@ -627,7 +729,10 @@ def predict_dpc(data_loader, dpc_model):
 
 if __name__ == '__main__':
     main()
+    torch.cuda.empty_cache()
 
     # python models/predict_sliding.py --gpu 0 --model convlstm --dataset Tappan13
-    # python models/predict_sliding.py --gpu 0 --model convgru --dataset Tappan13
-    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet-vae --dataset Tappan16
+    # python models/predict_sliding.py --gpu 0 --model convgru --dataset Tappan15
+    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet-vae --dataset Tappan01
+    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset Tappan01
+    # python models/predict_sliding.py --gpu 0 --model convgru --dataset PEV_2021

@@ -16,12 +16,99 @@ from unet.unet_vae_RQ_scheme1_encoder import UNet_VAE_RQ_scheme1_encoder
 from unet.unet_test import UNet_test
 
 
-class DPC_RNN_UNet(nn.Module):
+def reverse_chunks(chunks, num_seq):
+    '''
+    reverse the chunk code -> to window size
+    '''
+    (I,L2,N,SL,C,H,W) = chunks.shape
+    
+    all_arr = torch.zeros((I,L2+num_seq-1,SL,C,H,W))
+    for j in range(I):
+        for i in range(L2):
+            if i < L2-1:
+                array = chunks[j,i,0,:,:,:,:] # L2, N, SL, C, H, W
+                all_arr[j,i,:,:,:,:] = array
+            elif i == L2-1:
+                array = chunks[j,i,:,:,:,:,:]
+                all_arr[j,i:i+num_seq,:,:,:,:] = array
+            del array
+
+    # for j in range(I):
+    #     all_arr[j,L2+num_seq-1,:,:,:,:] = chunks[j,L2-1,-1,:,:,:,:]
+
+    return all_arr
+
+def reverse_seq(window, seq_length):
+    '''
+    reverse the chunk code -> to window size
+    '''
+    (I,L1,SL,C,H,W) = window.shape
+    all_arr = torch.zeros((I,L1+seq_length-1,C,H,W))
+    for j in range(I):
+        for i in range(L1):
+            if i < L1-1:
+                array = window[j,i,0,:,:,:] # L2, N, SL, C, H, W
+                all_arr[j,i,:,:,:] = array
+            elif i == L1-1:
+                array = window[j,i,:,:,:,:]
+                all_arr[j,i:i+seq_length,:,:,:] = array
+            del array
+
+    return all_arr
+
+
+class SegmentationHead_3D(nn.Sequential): 
+    """
+    Convolutional Segmentation head
+
+    args:
+        input_dim:  input layer size
+        hidden_dim: hidden layer size
+        output_dim: output layer size
+        kernel_size: conv kernel size
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, kernel_size: int = 3):
+        padding = kernel_size // 2
+        super().__init__(
+            # nn.Upsample(scale_factor=2),
+            nn.Conv3d(input_dim, hidden_dim, kernel_size, padding=padding),
+            nn.BatchNorm3d(hidden_dim),
+            nn.ReLU(),
+            nn.Conv3d(hidden_dim, output_dim, kernel_size, padding=padding),
+        )
+
+## Function to reduce 4D time series to 3D
+def stride_over_channels(x):
+    # Since our timesteps is in our "channels" position, we slowly
+    # reduce it down to 1.
+    # This is striding over our channels
+
+    # c1 = nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1)
+    # c2 = nn.Conv3d(in_channels=4, out_channels=1, kernel_size=3, padding=1)
+
+    # out1 = c1(x)            # batch-size x 4 x channels x height x width
+    # out2 = c2(out1)         # batch-size x 1 x channels x height x width
+    # out3 = out2.squeeze(1)  # batch-size x channels x height x width
+
+    c1 = nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1)
+    c2 = nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1)
+
+    out1 = c1(x.cpu().float())      # batch-size x 4 x channels x height x width
+    out2 = c2(out1)           # batch-size x 1 x channels x height x width
+    out3 = out2.squeeze(1)
+
+    out = out3
+
+    return out.to(cuda)
+
+
+class DPC_RNN(nn.Module):
     '''DPC with RNN'''
     def __init__(self, sample_size, device, num_seq=8, seq_len=5, pred_step=3, num_class=2, \
         network='resnet50', model_weight='', freeze=False, dropout=0.5, segment=True):
 
-        super(DPC_RNN_UNet, self).__init__()
+        super(DPC_RNN, self).__init__()
         torch.cuda.manual_seed(233)
         print('Using DPC-RNN model')
         self.sample_size = sample_size
@@ -121,6 +208,20 @@ class DPC_RNN_UNet(nn.Module):
         # self.segment_head = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
         self.segment_head = UNet_test(num_classes=2,segment=True,in_channels=128)
 
+        self.classification_layer = nn.Conv2d(
+            in_channels=128,
+            out_channels=2,
+            kernel_size=(3,3),
+            padding=1,
+        )
+
+        # encoder_dim = self.param['feature_size']
+        # gar_dim = 128
+        # mlp_hidden_dim = 64
+        # self.segment_head = SegmentationHead_3D(
+        #     input_dim=encoder_dim + gar_dim * 2, hidden_dim=mlp_hidden_dim, output_dim=2
+        # )
+
         self.relu = nn.ReLU(inplace=False)
         self.mask = None
         
@@ -137,9 +238,11 @@ class DPC_RNN_UNet(nn.Module):
     def forward(self, block):
         # block: [B, N, C, SL, W, H]
         ### extract feature ###
+        global cuda; cuda = torch.device('cuda')
         # print(f'block shape: {block.shape}')
         (B, L2, N, SL, C, H, W) = block.shape
         block = rearrange(block, "b l2 n sl c h w -> (b l2) n sl c h w")
+        # (B, N, SL, C, H, W) = block.shape
         if self.network == 'unet-vae' or self.network == "rqunet-vae-encoder" or self.network == 'unet':
             
             block = rearrange(block, "b n sl c h w -> (b n sl) c h w")
@@ -171,100 +274,42 @@ class DPC_RNN_UNet(nn.Module):
             else:
 
                 # print('feature in dpc shape: ', feats.shape)
-                context, _ = self.agg(feats)
-                context = context[:,-1,:].unsqueeze(1) # works
+                context, last_state = self.agg(feats)
+                # print('context vector shape: ', context.shape)
+                # print('last state shape: ', last_state.shape)
+                # print('last state squeeze shape: ', last_state.mean(dim=0).shape)
 
-                # context = context[-1,:,:].unsqueeze(1)
+                context = rearrange(context, "(b l2 n) sl c h w -> b l2 n sl c h w", n=N, l2=L2)
+                # print('context vector shape 1: ', context.shape)
 
-                print('context vector shape: ', context.shape)
+                context = reverse_seq(reverse_chunks(context,4),6)
+                # print('context vector shape 2: ', context.shape)
 
-                output, _ = self.segment_head(context.mean(dim=0))
+                # context = stride_over_channels(context)
+                # print('context vector shape after striding: ', context.shape)
+
+                # output, _ = self.segment_head(context.to(cuda, dtype=torch.float32))
+                context = context.to(cuda, dtype=torch.float32)
+
+                # output, _ = self.segment_head(last_state.mean(dim=0))
+                output = self.classification_layer(last_state.mean(dim=0))
+
                 # print('output shape: ', output.shape)
 
-                return output, context
+                ##################3
+                # # print('feature in dpc shape: ', feats.shape)
+                # context, _ = self.agg(feats)
+                # # context = context[:,-1,:].unsqueeze(1) # works
 
-        else:
-            block = block.view(B*N, C, SL, H, W)
-            feature = self.backbone(block)
+                # context = context[:,-1,:].unsqueeze(0)
 
-            del block
+                # # context = stride_over_channels(context)
+                # # # print('context vector shape after striding: ', context.shape)
 
-            if not self.segment:
+                # # print('context vector shape: ', context.shape)
 
-                feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
-
-                feature_inf_all = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size) # before ReLU, (-inf, +inf)
-                feature = self.relu(feature) # [0, +inf)
-                feature = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size) # [B,N,D,6,6], [0, +inf)
-
-                # print(f'feature shape: {feature.shape}')
-                feature_inf = feature_inf_all[:, N-self.pred_step::, :].contiguous()
-                del feature_inf_all
-
-                ### aggregate, predict future ###
-                _, hidden = self.agg(feature[:, 0:N-self.pred_step, :].contiguous())
-                hidden = hidden[:,-1,:] # after tanh, (-1,1). get the hidden state of last layer, last time step
-
-                # print(f'hidden shape: {hidden.shape}')
-                
-                pred = []
-                for i in range(self.pred_step):
-                    # sequentially pred future
-                    p_tmp = self.network_pred(hidden)
-                    # print(f'p_tmp shape :{p_tmp.shape}')
-                    pred.append(p_tmp)
-                    _, hidden = self.agg(self.relu(p_tmp).unsqueeze(1), hidden.unsqueeze(0))
-                    hidden = hidden[:,-1,:]
-                pred = torch.stack(pred, 1) # B, pred_step, xxx
-                del hidden
-
-                ## Get similarity score ###
-                # pred: [B, pred_step, D, last_size, last_size]
-                # GT: [B, N, D, last_size, last_size]
-                N = self.pred_step
-                # dot product D dimension in pred-GT pair, get a 6d tensor. First 3 dims are from pred, last 3 dims are from GT. 
-                pred = pred.permute(0,1,3,4,2).contiguous().view(B*self.pred_step*self.last_size**2, self.param['feature_size'])
-                feature_inf = feature_inf.permute(0,1,3,4,2).contiguous().view(B*N*self.last_size**2, self.param['feature_size']).transpose(0,1)
-                score = torch.matmul(pred, feature_inf).view(B, self.pred_step, self.last_size**2, B, N, self.last_size**2)
-                del feature_inf, pred
-
-                if self.mask is None: # only compute mask once
-                    # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-                    mask = torch.zeros((B, self.pred_step, self.last_size**2, B, N, self.last_size**2), dtype=torch.int8, requires_grad=False).detach().cuda()
-                    mask[torch.arange(B), :, :, torch.arange(B), :, :] = -3 # spatial neg
-                    for k in range(B):
-                        mask[k, :, torch.arange(self.last_size**2), k, :, torch.arange(self.last_size**2)] = -1 # temporal neg
-                    tmp = mask.permute(0, 2, 1, 3, 5, 4).contiguous().view(B*self.last_size**2, self.pred_step, B*self.last_size**2, N)
-                    for j in range(B*self.last_size**2):
-                        tmp[j, torch.arange(self.pred_step), j, torch.arange(N-self.pred_step, N)] = 1 # pos
-                    mask = tmp.view(B, self.last_size**2, self.pred_step, B, self.last_size**2, N).permute(0,2,1,3,5,4)
-                    self.mask = mask
-
-                return [score, self.mask]
-
-            else:
-
-                feature = F.relu(feature)
-
-                print('feature in dpc shape: ', feature.shape)
-                
-                # feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=1)
-                # feature = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size) # [B*N,D,last_size,last_size]
-                # context, _ = self.agg(feature)
-                # context = context[:,-1,:].unsqueeze(1)
-                # context = F.avg_pool3d(context, (1, self.last_size, self.last_size), stride=1).squeeze(-1).squeeze(-1)
-                # del feature
-
-                # context = self.final_bn(context.transpose(-1,-2)).transpose(-1,-2) # [B,N,C] -> [B,C,N] -> BN() -> [B,N,C], because BN operates on id=1 channel.
-                # output = self.final_fc(context).view(B, -1, self.num_class)
-
-                context, _ = self.agg(feature)
-                context = context[:,-1,:].unsqueeze(1)
-
-                print('context vector shape: ', context.shape)
-
-                output, _ = self.segment_head(context)
-                print('output shape: ', output.shape)
+                # output, _ = self.segment_head(context.mean(dim=0))
+                # output, _ = self.segment_head(context)
 
                 return output, context
 
