@@ -41,7 +41,7 @@ parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -52,8 +52,8 @@ parser.add_argument('--img_dim', default=64, type=int)
 parser.add_argument('--ts_length', default=10, type=int)
 parser.add_argument('--pad_size', default=0, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
-parser.add_argument('--num_chips', default=40, type=int)
-parser.add_argument('--num_val', default=4, type=int)
+parser.add_argument('--num_chips', default=100, type=int)
+parser.add_argument('--num_val', default=10, type=int)
 parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
@@ -382,6 +382,7 @@ def main():
         hls = False
 
     filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % file.keys())
         ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
@@ -422,12 +423,15 @@ def main():
 
     temp_ts_set = []
     temp_mask_set = []
+
+    ts_arr = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
+
     # for i in range(len(h_list_train)):
     #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], \
     #         input_size=input_size)
 
     for i in range(num_chips+num_val):
-        ts, mask = chipper(ts_arr[:total_ts_len,1:-2,:,:], mask_arr, input_size=input_size)
+        ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=input_size)
         if np.any(ts == -9999):
             continue
         ts = np.squeeze(ts)
@@ -448,12 +452,14 @@ def main():
                 if args.standardization is not None:
                     ts[frame] = standardize_image(ts[frame],args.standardization)
             
-        t_im = np.transpose(ts[0], (1,2,0))
-        t_im = rescale_truncate(t_im[:,:,:3])
-        plt.imshow(t_im)
-        plt.savefig('/home/geoint/tri/dpc/test_im.png')
-        plt.close()
-        mask = mask.reshape((mask.shape[1],mask.shape[2]))
+        # t_im = np.transpose(ts[0], (1,2,0))
+        # t_im = rescale_truncate(t_im[:,:,:3])
+        # plt.imshow(t_im)
+        # plt.savefig('/home/geoint/tri/dpc/test_im.png')
+        # plt.close()
+
+
+        mask = np.squeeze(mask)
 
         # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
@@ -461,7 +467,7 @@ def main():
         temp_mask_set.append(mask)
 
     ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = ts_set[:,:total_ts_len] # get the first 100 in the time series
+    train_ts_set = ts_set[:,:total_ts_len]
     mask_set = np.stack(temp_mask_set, axis=0)
     train_mask_set = mask_set[:]
 
@@ -575,7 +581,7 @@ def main():
         min_loss = np.inf
 
         for epoch in range(args.start_epoch, args.epochs):
-            print('Epoch: ', epoch)
+            # print('Epoch: ', epoch)
             for idx, input in enumerate(train_dl):
 
                 input_ts = input['ts']
@@ -648,7 +654,7 @@ def main():
                 plt.title(f"Segmentation Prediction")
                 image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
                 plt.imshow(image)
-                plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-pred.png")
+                plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-0405-pred.png")
                 plt.close()
 
 
@@ -658,19 +664,19 @@ def main():
                                 'state_dict': model.state_dict(),
                                 'min_loss': min_loss,
                                 'optimizer': optimizer.state_dict()}, 
-                                is_best, filename=os.path.join(model_dir, f'dpc-rnn-{network}-encoder-0319_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_dir, f'dpc-rnn-{network}-encoder-0405-stride_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
             # print(f"train loss: {train_losses.local_avg}")
             # print(f"val loss: {val_losses.local_avg}")
-            print(f"epoch: {epoch+1} train loss: {train_loss} val loss: {val_loss}")
+            print(f"epoch: {epoch+1} train loss: {train_losses.local_avg} val loss: {val_losses.local_avg}")
 
            
 
         plt.plot(train_loss_out, color ="blue")
         plt.plot(val_loss_out, color = "red")
-        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0319.png")
+        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0323_stride.png")
         plt.close()
 
         print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))

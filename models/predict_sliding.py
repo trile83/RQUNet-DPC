@@ -32,6 +32,7 @@ from inference import inference
 from tensorboardX import SummaryWriter
 from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
 from benchmod.convgru import ConvGRU_Seg
+from unet3d.unet3d import UNet3D
 from unet.unet_test import UNet_test
 
 torch.cuda.empty_cache()
@@ -81,7 +82,7 @@ def rescale_truncate(image):
 def rescale_image(
             image: np.ndarray,
             rescale_type: str = 'per-image',
-            highest_value: int = 10000
+            highest_value: int = 1
         ):
     """
     Rescale image [0, 1] per-image or per-channel.
@@ -98,6 +99,9 @@ def rescale_image(
         image = (image - np.min(image, initial=highest_value, where=mask)) \
             / (np.max(image, initial=highest_value, where=mask)
                 - np.min(image, initial=highest_value, where=mask))
+    elif rescale_type == 'per-ts':
+        image = (image - np.min(image)) / (np.max(image) - np.min(image))
+
     elif rescale_type == 'per-channel':
         for i in range(image.shape[-1]):
             image[:, :, i] = (
@@ -312,11 +316,13 @@ def main():
         hls = False
 
     if not hls:
-        # ts_name = 'Tappan13'
+
         if ts_name == 'Tappan14' or ts_name == 'Tappan15':
             filename = "/home/geoint/tri/hls_ts_video/hls_data_1415.hdf5"
         else:
             filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+
+        # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
 
         with h5py.File(filename, "r") as file:
             print("Keys: %s" % file.keys())
@@ -365,18 +371,23 @@ def main():
 
 
     if ts_arr.shape[0] > 9:
-        train_ts_set = ts_arr[:total_ts_len,1:-2,:,:]
+        # train_ts_set = ts_arr[:total_ts_len,1:-2,:,:]
+        train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
     else:
-        train_ts_set = ts_arr[:,1:-2,:,:]
+        train_ts_set = np.concatenate((ts_arr[:,1:-4,:,:], ts_arr[:,-2:,:,:]), axis=1)
+
+    print(train_ts_set.shape)
         
     
     # ignore the no-data edge of cut Tappan Square to HLS
     if not hls:
         if ts_name == 'Tappan02' or ts_name == 'Tappan04':
-            train_ts_set = ts_arr[:,1:-2,1:-2,1:160]
+            # train_ts_set = ts_arr[:,1:-2,1:-2,1:160]
+            train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,1:-2,1:160], ts_arr[:total_ts_len,-2:,1:-2,1:160]), axis=1)
             mask_arr = mask_arr[1:-2,1:160]
         elif ts_name == 'Tappan05':
-            train_ts_set = ts_arr[:,1:-2,1:300,1:-2]
+            # train_ts_set = ts_arr[:,1:-2,1:300,1:-2]
+            train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,1:300,1:-2], ts_arr[:total_ts_len,-2:,1:300,1:-2]), axis=1)
             mask_arr = np.squeeze(
                 rxr.open_rasterio('/home/geoint/tri/senegal_hls_mask/Tappan05_WV02_20110430.tiff').values
                 )
@@ -392,7 +403,7 @@ def main():
             plt.close()
             # print(mask_arr.shape)
         else:
-            train_ts_set = ts_arr[:,1:-2,1:-2,1:-2]
+            train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,1:-2,1:-2], ts_arr[:total_ts_len,-2:,1:-2,1:-2]), axis=1)
             mask_arr = mask_arr[1:-2,1:-2]
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -407,13 +418,20 @@ def main():
         unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
 
         ### 10 bands
-        unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_1train_9band_epoch_155.pth'
+        # unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_1train_9band_epoch_155.pth'
+
+        # unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_0322_10band_epoch_93.pth'
+
+        unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_0322_cloud_10band_epoch_23.pth'
         if torch.cuda.is_available():
             unet_segment = unet_segment.to(cuda)
 
         unet_segment.load_state_dict(torch.load(unetsegment_checkpoint)['state_dict'])
 
-        xraster = train_ts_set[:10,:,:,:].mean(axis=0)
+        if args.rescale == 'per-ts':
+            train_ts_set = rescale_image(train_ts_set, args.rescale)
+
+        xraster = train_ts_set[:args.ts_length,:,:,:].mean(axis=0)
 
         if hls:
             temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
@@ -427,12 +445,49 @@ def main():
             model=unet_segment,
             n_classes=args.num_classes,
             overlap=0.5,
-            batch_size=128,
+            batch_size=32,
             standardization=standardization,
             mean=0,
             std=0,
             normalize=normalization,
-            rescale=None,
+            rescale=args.rescale,
+            model_option=model_option
+        )
+
+    elif model_option == '3d-unet':
+        model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+        model = UNet3D(in_channel=10, n_classes=args.num_classes)
+
+        model_checkpoint = f'{str(model_dir)}3d-unet_0405_10band_epoch_40.pth'
+        if torch.cuda.is_available():
+            model = model.to(cuda)
+
+        model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
+
+        xraster = train_ts_set[:,:,:,:]
+
+        if hls:
+            # 2000 is the optimal value for the nodata
+            # xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000)
+            xraster = xraster[:args.ts_length,:,:,:]
+            temporary_tif = xr.where(xraster > -9000, xraster, 1000) 
+        else:
+            xraster = xraster[:args.ts_length,:,:,:]
+            temporary_tif = xr.where(xraster > -9000, xraster, 1000)
+
+        # temporary_tif = rescale_image(temporary_tif)
+
+        prediction = inference.sliding_window_tiler(
+            xraster=temporary_tif,
+            model=model,
+            n_classes=args.num_classes,
+            overlap=0.5,
+            batch_size=16,
+            standardization=standardization,
+            mean=0,
+            std=0,
+            normalize=normalization,
+            rescale=args.rescale,
             model_option=model_option
         )
     
@@ -458,10 +513,10 @@ def main():
 
         if hls:
             # 2000 is the optimal value for the nodata
-            xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000)
+            xraster = xr.where(xraster[:args.ts_length,:,:,:] > -9000, xraster[:args.ts_length,:,:,:], 1000)
             temporary_tif = xraster
         else:
-            xraster = xraster[:10,:,:,:]
+            xraster = xraster[:args.ts_length,:,:,:]
             temporary_tif = xr.where(xraster > -9000, xraster, 1000)
 
         # temporary_tif = rescale_image(temporary_tif)
@@ -476,7 +531,7 @@ def main():
             mean=0,
             std=0,
             normalize=normalization,
-            rescale=None,
+            rescale=args.rescale,
             model_option=model_option
         )
 
@@ -493,7 +548,10 @@ def main():
         ### 10 bands
         # model_checkpoint = f'{str(model_dir)}convgru_10band_epoch_90.pth'
         # model_checkpoint = f'{str(model_dir)}convgru_new_10band_epoch_66.pth'
-        model_checkpoint = f'{str(model_dir)}convgru_0320_10band_epoch_36.pth'
+        # model_checkpoint = f'{str(model_dir)}convgru_0320_10band_epoch_36.pth'
+
+        # model_checkpoint = f'{str(model_dir)}convgru_0320_10band_norm_epoch_197.pth'
+        model_checkpoint = f'{str(model_dir)}convgru_0320_10band_norm_epoch_153.pth'
         if torch.cuda.is_available():
             model = model.to(cuda)
 
@@ -504,10 +562,10 @@ def main():
         if hls:
             # 2000 is the optimal value for the nodata
             # xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000)
-            xraster = xraster[:10,:,:,:]
+            xraster = xraster[:args.ts_length,:,:,:]
             temporary_tif = xr.where(xraster > -9000, xraster, 1000) 
         else:
-            xraster = xraster[:10,:,:,:]
+            xraster = xraster[:args.ts_length,:,:,:]
             temporary_tif = xr.where(xraster > -9000, xraster, 1000)
 
         # temporary_tif = rescale_image(temporary_tif)
@@ -558,8 +616,15 @@ def main():
         if network == 'unet':
             # model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
             # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder-0306_10band_ts01_epoch14.pth'
-            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder-0317_10band_ts01_epoch41.pth'
-            model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0319_10band_ts01_epoch14.pth'
+
+            ## classification layer
+            # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0319_10band_ts01_epoch14.pth'
+
+            ## unet segment
+            model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0405-stride_10band_ts01_epoch28.pth'
+
+            ## cloud
+            # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0323-cloud-stride_10band_ts01_epoch7.pth'
         else:
             # model_checkpoint = f'{str(model_dir)}dpc-unet_10band_ts01_epoch7.pth'
             # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-vae-encoder-0307_10band_ts01_epoch14.pth'
@@ -593,7 +658,7 @@ def main():
         if hls:
             temporary_tif = xr.where(xraster > -9000, xraster, 2000) # 2000 is the optimal value for the nodata
         else:
-            temporary_tif = xraster[:10]
+            temporary_tif = xraster[:args.ts_length]
             temporary_tif = xr.where(temporary_tif > -9000, temporary_tif, 2000)
 
             print('temp tif shape: ', temporary_tif.shape)
@@ -656,9 +721,9 @@ def main():
     image = prediction
     plt.imshow(image)
     if model_option == 'dpc-unet':
-        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}-new.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}-cloud.png", dpi=300, bbox_inches='tight')
     else:
-        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-cloud.png", dpi=300, bbox_inches='tight')
 
     plt.close()
 
@@ -733,6 +798,9 @@ if __name__ == '__main__':
 
     # python models/predict_sliding.py --gpu 0 --model convlstm --dataset Tappan13
     # python models/predict_sliding.py --gpu 0 --model convgru --dataset Tappan15
+    # python models/predict_sliding.py --gpu 0 --model convgru --dataset Tappan15 --ts_length 30
     # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet-vae --dataset Tappan01
     # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset Tappan01
+    # python models/predict_sliding.py --gpu 0 --model unet --dataset Tappan01
     # python models/predict_sliding.py --gpu 0 --model convgru --dataset PEV_2021
+    # python models/predict_sliding.py --gpu 0 --model 3d-unet --dataset Tappan01 --img_dim 16 --ts_length 16

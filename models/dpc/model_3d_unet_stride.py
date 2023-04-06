@@ -84,18 +84,20 @@ def stride_over_channels(x):
     # reduce it down to 1.
     # This is striding over our channels
 
-    # c1 = nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1)
-    # c2 = nn.Conv3d(in_channels=4, out_channels=1, kernel_size=3, padding=1)
+    c1 = nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1)
+    c2 = nn.Conv3d(in_channels=4, out_channels=1, kernel_size=3, padding=1)
 
     # out1 = c1(x)            # batch-size x 4 x channels x height x width
     # out2 = c2(out1)         # batch-size x 1 x channels x height x width
     # out3 = out2.squeeze(1)  # batch-size x channels x height x width
 
-    c1 = nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1)
-    c2 = nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1)
+    x = x.permute(1, 0, 2, 3, 4)
+
+    # c1 = nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1)
+    # c2 = nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1)
 
     out1 = c1(x.cpu().float())      # batch-size x 4 x channels x height x width
-    out2 = c2(out1)           # batch-size x 1 x channels x height x width
+    out2 = c2(out1)                 # batch-size x 1 x channels x height x width
     out3 = out2.squeeze(1)
 
     out = out3
@@ -292,7 +294,14 @@ class DPC_RNN(nn.Module):
                 context = context.to(cuda, dtype=torch.float32)
 
                 # output, _ = self.segment_head(last_state.mean(dim=0))
-                output = self.classification_layer(last_state.mean(dim=0))
+
+                ##### works as of 03/23/2023
+                # output = self.classification_layer(last_state.mean(dim=0))
+
+                # output = self.classification_layer(context.mean(dim=1))
+                output, _ = self.segment_head(context.mean(dim=1).to(cuda, dtype=torch.float32))
+
+                # output = self.classification_layer(stride_over_channels(last_state))
 
                 # print('output shape: ', output.shape)
 

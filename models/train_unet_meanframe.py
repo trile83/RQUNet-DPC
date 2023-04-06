@@ -35,10 +35,10 @@ parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
-parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
+parser.add_argument('--wd', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=50, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -51,7 +51,22 @@ parser.add_argument('--pad_size', default=0, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
 parser.add_argument('--num_chips', default=40, type=int)
 parser.add_argument('--num_val', default=4, type=int)
+parser.add_argument('--standardization', default='local', type=str)
+parser.add_argument('--normalization', default=0.0001, type=float)
+parser.add_argument('--rescale', default='per-ts', type=str)
 
+def normalize_image(image: np.ndarray, normalize: float):
+    """
+    Normalize image within parameter, simple scaling of values.
+    Args:
+        image (np.ndarray): array to normalize
+        normalize (float): float value to normalize with
+    Returns:
+        normalized np.ndarray
+    """
+    if normalize:
+        image = image / normalize
+    return image
 
 def rescale_truncate(image):
     if np.amin(image) < 0:
@@ -65,7 +80,11 @@ def rescale_truncate(image):
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
 
-def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+def rescale_image(
+            image: np.ndarray,
+            rescale_type: str = 'per-image',
+            highest_value: int = 1
+        ):
     """
     Rescale image [0, 1] per-image or per-channel.
     Args:
@@ -75,15 +94,50 @@ def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
         rescaled np.ndarray
     """
     image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
     if rescale_type == 'per-image':
+        image = (image - np.min(image, initial=highest_value, where=mask)) \
+            / (np.max(image, initial=highest_value, where=mask)
+                - np.min(image, initial=highest_value, where=mask))
+    elif rescale_type == 'per-ts':
         image = (image - np.min(image)) / (np.max(image) - np.min(image))
+
     elif rescale_type == 'per-channel':
         for i in range(image.shape[-1]):
             image[:, :, i] = (
-                image[:, :, i] - np.min(image[:, :, i])) / \
-                (np.max(image[:, :, i]) - np.min(image[:, :, i]))
+                image[:, :, i]
+                - np.min(image[:, :, i], initial=highest_value, where=mask)) \
+                / (np.max(image[:, :, i], initial=highest_value, where=mask)
+                    - np.min(
+                        image[:, :, i], initial=highest_value, where=mask))
     else:
         logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
+
+def standardize_image(
+    image,
+    standardization_type: str,
+    mean: list = None,
+    std: list = None
+):
+    """
+    Standardize image within parameter, simple scaling of values.
+    Loca, Global, and Mixed options.
+    """
+    image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
+    if standardization_type == 'local':
+        for i in range(image.shape[0]):
+            image[i, :, :] = (
+                image[i, :, :] - np.mean(image[i, :, :], where=mask)) / \
+                (np.std(image[i, :, :], where=mask) + 1e-8)
+    elif standardization_type == 'global':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (image[:, :, i] - mean[i]) / (std[i] + 1e-8)
+    elif standardization_type == 'mixed':
+        raise NotImplementedError
     return image
 
 class satDataset(Dataset):
@@ -312,7 +366,8 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % file.keys())
         ts_arr = file['Tappan01_PEV_ts'][()]
@@ -347,9 +402,21 @@ def main():
     for i in range(num_chips+num_val):
         ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
         ts = np.squeeze(ts)
-        for j in range(ts.shape[0]):
-            ts[j] = rescale_image(ts[j])
-        mask = mask.reshape((mask.shape[1],mask.shape[2]))
+
+        if args.rescale == 'per-ts':
+            ts = rescale_image(ts, args.rescale)
+        else:
+            for frame in range(ts.shape[0]):
+                if args.normalization is not None:
+                    ts[frame] = normalize_image(ts[frame], args.normalization)
+
+                if args.rescale is not None:
+                    ts[frame] = rescale_image(ts[frame],args.rescale)
+
+                if args.standardization is not None:
+                    ts[frame] = standardize_image(ts[frame],args.standardization)
+
+        mask = np.squeeze(mask)
 
         # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
@@ -363,7 +430,6 @@ def main():
     print(f"train ts set shape: {train_ts_set.shape}")
     print(f"train mask set shape: {train_mask_set.shape}")
 
-        
     ### dpc model ###
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -392,7 +458,7 @@ def main():
     # params = model.parameters()
     # optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
 
-    segment_optimizer = optim.Adam(unet_segment.parameters(), lr=0.001, weight_decay=0.0001)
+    segment_optimizer = optim.Adam(unet_segment.parameters(), lr=args.lr, weight_decay=args.wd)
     args.old_lr = None
 
     ### restart training ###
@@ -457,8 +523,10 @@ def main():
         train_loss_lst.append(train_loss)
         val_loss_lst.append(val_loss)
 
-        print(f"train loss: {train_loss}")
-        print(f"val loss: {val_loss}")
+        # print(f"train loss: {train_loss}")
+        # print(f"val loss: {val_loss}")
+
+        print(f"epoch: {epoch+1} train loss: {train_loss} val loss: {val_loss}")
 
         # save check_point
         is_best = val_loss < min_loss
@@ -472,7 +540,7 @@ def main():
                             'state_dict': unet_segment.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_1train_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_0322_cloud_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
 
     plt.plot(train_loss_lst, color ="blue")
     plt.plot(val_loss_lst, color = "red")

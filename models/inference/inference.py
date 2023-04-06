@@ -407,7 +407,7 @@ def sliding_window_tiler(
             std=None,
             window: str = 'triang',  # 'overlap-tile',
             normalize: float = 0.0001,
-            rescale=None,
+            rescale='per-ts',
             model_option='unet'
         ):
     """
@@ -488,6 +488,29 @@ def sliding_window_tiler(
         tiler_mask = Tiler(
             data_shape=(xraster.shape[0], 128, xraster.shape[2], xraster.shape[3]),
             tile_shape=(xraster.shape[0], 128, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+    elif model_option == '3d-unet':
+
+        tile_size = 16
+
+        tiler_image = Tiler(
+            data_shape=xraster.shape,
+            tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
+            channel_dimension=1,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+        # Define the tiler and merger based on the output size of the prediction
+        tiler_mask = Tiler(
+            data_shape=(n_classes, xraster.shape[2], xraster.shape[3]),
+            tile_shape=(n_classes, tile_size, tile_size),
             channel_dimension=0,
             overlap=overlap,
             mode=pad_style,
@@ -620,17 +643,6 @@ def sliding_window_tiler(
             # Standardize
             # batch = rescale_image(batch)
 
-            for i in range(batch.shape[1]):
-                batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
-
-            if rescale is not None:
-                for i in range(batch.shape[1]):
-                    batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
-
-            if standardization is not None:
-                for i in range(batch.shape[1]):
-                    batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
-
             # print("AFTER STD", batch.shape)
 
             batch = torch.Tensor(batch).to(cuda, dtype=torch.float32)
@@ -640,6 +652,43 @@ def sliding_window_tiler(
             # Predict
             # batch = model.predict(batch, batch_size=batch_size)
             batch = model(x)[0]
+            # batch = np.moveaxis(batch, -1, 1)
+            # print("AFTER PREDICT", batch.shape, batch_id)
+
+            # Merge the updated data in the array
+            merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
+
+    elif model_option == '3d-unet':
+
+        for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
+
+            # Standardize
+            if rescale == 'per-ts':
+                # for i in range(batch.shape[1]):
+                #     if normalize is not None:
+                #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+                batch = rescale_image(batch, rescale)
+            else:
+                for i in range(batch.shape[1]):
+                    batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+
+                if rescale is not None:
+                    for i in range(batch.shape[1]):
+                        batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
+
+                if standardization is not None:
+                    for i in range(batch.shape[1]):
+                        batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
+
+            # print("AFTER STD", batch.shape)
+
+            batch = torch.Tensor(batch).to(cuda, dtype=torch.float32)
+
+            x = batch
+
+            # Predict
+            # batch = model.predict(batch, batch_size=batch_size)
+            batch = model(x)
             # batch = np.moveaxis(batch, -1, 1)
             # print("AFTER PREDICT", batch.shape, batch_id)
 

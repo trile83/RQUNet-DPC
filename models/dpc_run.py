@@ -165,7 +165,6 @@ def main():
     region = 'BH_R001'
     path_to_cubes ='/home/geoint/tri/dpc/models/BH_R001/region.hdf5'
 
-    # region = 'BLA_QFABRIC_R007'
     # path_to_cubes ='E:/BlackSky/temp/cubes_new/BLA_QFABRIC_R007/region.hdf5'
     band_mins = [0, 0, 0, 0, 0]
     band_maxs = [17456, 18379, 19528, 16610, 15271]

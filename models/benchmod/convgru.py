@@ -130,7 +130,7 @@ class ConvGRU(nn.Module):
             # (t, b, c, h, w) -> (b, t, c, h, w)
             input_tensor.permute(1, 0, 2, 3, 4)
 
-        # Implement stateful ConvLSTM
+        # Implement stateful ConvGRU
         if hidden_state is not None:
             raise NotImplementedError()
         else:
@@ -220,6 +220,5 @@ class ConvGRU_Seg(nn.Module):
         )  # BxT pad mask
         pad_mask = pad_mask if pad_mask.any() else None
         _, out = self.convgru_encoder(input, pad_mask=pad_mask)
-        print('out shape: ', out.shape)
         out = self.classification_layer(out)
         return out

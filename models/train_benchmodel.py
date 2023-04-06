@@ -17,6 +17,7 @@ from utils.augmentation import *
 from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy
 from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
 from benchmod.convgru import ConvGRU_Seg
+from unet3d.unet3d import UNet3D
 from tqdm import tqdm
 import argparse
 import h5py
@@ -375,6 +376,7 @@ def main():
         hls = False
 
     filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
     with h5py.File(filename, "r") as file:
         # print("Keys: %s" % file.keys())
         ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
@@ -407,18 +409,17 @@ def main():
     temp_ts_set = []
     temp_mask_set = []
 
+    ts_arr = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
+
     # for i in range(len(h_list_train)):
     #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], input_size=input_size)
 
     for i in range(num_chips+num_val):
-        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
+        ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=input_size)
         # ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         ts = np.squeeze(ts)
 
         if args.rescale == 'per-ts':
-            # for frame in range(ts.shape[0]):
-            #     if args.normalization is not None:
-            #         ts[frame] = normalize_image(ts[frame], args.normalization)
             ts = rescale_image(ts, args.rescale)
         else:
             for frame in range(ts.shape[0]):
@@ -459,13 +460,15 @@ def main():
             kernel_size=(3, 3)
             )
     elif model_option == "convgru":
-            model = ConvGRU_Seg(
-                num_classes=args.num_classes,
-                input_size=(input_size,input_size),
-                input_dim=10,
-                kernel_size=(3, 3),
-                hidden_dim=180,
+        model = ConvGRU_Seg(
+            num_classes=args.num_classes,
+            input_size=(input_size,input_size),
+            input_dim=10,
+            kernel_size=(3, 3),
+            hidden_dim=180,
             )
+    elif model_option == '3d-unet':
+        model = UNet3D(in_channel=10, n_classes=args.num_classes)
 
     # model = nn.DataParallel(model)
 
@@ -566,7 +569,7 @@ def main():
                             'optimizer': segment_optimizer.state_dict()}, 
                             is_best, filename=\
                                 os.path.join(model_dir, \
-                                    f'{model_option}_0320_10band_norm_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                                    f'{model_option}_0405_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
 
 
         
@@ -671,3 +674,4 @@ if __name__ == '__main__':
 
     # python models/train_benchmodel.py --model convlstm --dataset Tappan01 --img_dim 64 --epochs 100
     # python models/train_benchmodel.py --model convgru --dataset Tappan01 --img_dim 64 --epochs 50
+    # python models/train_benchmodel.py --model 3d-unet --dataset Tappan01 --img_dim 16 --epochs 50 --ts_length 16
