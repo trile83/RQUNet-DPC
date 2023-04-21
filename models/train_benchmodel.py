@@ -37,7 +37,7 @@ parser.add_argument('--num_seq', default=4, type=int, help='number of video bloc
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=1, type=int)
-parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
+parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
@@ -51,8 +51,8 @@ parser.add_argument('--train_what', default='all', type=str)
 parser.add_argument('--img_dim', default=64, type=int)
 parser.add_argument('--ts_length', default=10, type=int)
 parser.add_argument('--pad_size', default=0, type=int)
-parser.add_argument('--num_chips', default=100, type=int)
-parser.add_argument('--num_val', default=10, type=int)
+parser.add_argument('--num_chips', default=500, type=int)
+parser.add_argument('--num_val', default=50, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
 parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
@@ -359,6 +359,22 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
+class EarlyStopper:
+    def __init__(self, patience=1, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+
+    def early_stop(self, validation_loss, min_validation_loss):
+        if validation_loss < min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
+
 
 def main():
     torch.manual_seed(0)
@@ -401,8 +417,6 @@ def main():
     num_chips=args.num_chips # I
     num_val=args.num_val
 
-    # h_list_train =[10,20]
-    # w_list_train =[15,25]
     h_list_train =[10,20,30,40,50,70,80,90,100,110,200]
     w_list_train =[15,25,35,45,55,75,85,95,105,115,215]
 
@@ -416,7 +430,6 @@ def main():
 
     for i in range(num_chips+num_val):
         ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=input_size)
-        # ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
         ts = np.squeeze(ts)
 
         if args.rescale == 'per-ts':
@@ -519,6 +532,8 @@ def main():
     best_acc = 0
     min_loss = np.inf
 
+    early_stopper = EarlyStopper(patience=10, min_delta=0.6)
+
     for epoch in range(args.start_epoch, args.epochs):
         train_loss = train(train_segment_dl, model, segment_optimizer)
         val_loss, im, mask, mask_pred = val(val_segment_dl, model, epoch)
@@ -569,25 +584,19 @@ def main():
                             'optimizer': segment_optimizer.state_dict()}, 
                             is_best, filename=\
                                 os.path.join(model_dir, \
-                                    f'{model_option}_0405_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
-
-
+                                    f'{model_option}_0420_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+            
+        # early stopping
+        if early_stopper.early_stop(val_loss, min_loss):
+            print("Stop at epoch:", epoch+1)
+            break
         
     plt.plot(train_loss_lst, color ="blue")
     plt.plot(val_loss_lst, color = "red")
-    plt.savefig(f"/home/geoint/tri/dpc_test_out/{model_option}_train_loss.png")
+    plt.savefig(f"/home/geoint/tri/dpc_test_out/{model_option}_train_loss_0420.png")
     plt.close()
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
-
-def process_output(mask):
-    '''task mask as input, compute the target for contrastive loss'''
-    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
-    # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-    (B, NP, SQ, B2, NS, _) = mask.size() # [B, P, SQ, B, N, SQ]
-    target = mask == 1
-    target.requires_grad = False
-    return target, (B, B2, NS, NP, SQ)
 
 
 def train(data_loader, segment_model, optimizer):
@@ -673,5 +682,5 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
 
     # python models/train_benchmodel.py --model convlstm --dataset Tappan01 --img_dim 64 --epochs 100
-    # python models/train_benchmodel.py --model convgru --dataset Tappan01 --img_dim 64 --epochs 50
+    # python models/train_benchmodel.py --model convgru --dataset Tappan01 --img_dim 64 --epochs 100
     # python models/train_benchmodel.py --model 3d-unet --dataset Tappan01 --img_dim 16 --epochs 50 --ts_length 16

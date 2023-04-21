@@ -41,7 +41,7 @@ parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -57,6 +57,7 @@ parser.add_argument('--num_val', default=10, type=int)
 parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
+parser.add_argument('--segment_model', default='conv3d', type=str)
 
 def rescale_truncate(image):
     if np.amin(image) < 0:
@@ -364,6 +365,22 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
+class EarlyStopper:
+    def __init__(self, patience=1, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+
+    def early_stop(self, validation_loss, min_validation_loss):
+        if validation_loss < min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
+
 
 def main():
     torch.manual_seed(0)
@@ -437,9 +454,6 @@ def main():
         ts = np.squeeze(ts)
 
         if args.rescale == 'per-ts':
-            # for frame in range(ts.shape[0]):
-            #     if args.normalization is not None:
-            #         ts[frame] = normalize_image(ts[frame], args.normalization)
             ts = rescale_image(ts, args.rescale)
         else:
             for frame in range(ts.shape[0]):
@@ -526,7 +540,8 @@ def main():
                     network=network,
                     pred_step=1,
                     model_weight=model_checkpoint,
-                    freeze=True)
+                    freeze=True,
+                    segment_model=args.segment_model)
 
 
     if torch.cuda.is_available():
@@ -579,6 +594,8 @@ def main():
 
         print(f"length of dpc input training set {len(train_dl)}")
         min_loss = np.inf
+
+        early_stopper = EarlyStopper(patience=10, min_delta=0.2)
 
         for epoch in range(args.start_epoch, args.epochs):
             # print('Epoch: ', epoch)
@@ -664,7 +681,7 @@ def main():
                                 'state_dict': model.state_dict(),
                                 'min_loss': min_loss,
                                 'optimizer': optimizer.state_dict()}, 
-                                is_best, filename=os.path.join(model_dir, f'dpc-rnn-{network}-encoder-0405-stride_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_dir, f'dpc-{network}-encoder-0421-{args.segment_model}_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
@@ -672,11 +689,14 @@ def main():
             # print(f"val loss: {val_losses.local_avg}")
             print(f"epoch: {epoch+1} train loss: {train_losses.local_avg} val loss: {val_losses.local_avg}")
 
-           
+            # early stopping
+            if early_stopper.early_stop(val_losses.local_avg, min_loss):
+                print("Stop at epoch:", epoch+1)
+                break
 
         plt.plot(train_loss_out, color ="blue")
         plt.plot(val_loss_out, color = "red")
-        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0323_stride.png")
+        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0421.png")
         plt.close()
 
         print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
@@ -723,7 +743,7 @@ def main():
                                 'best_acc': best_acc,
                                 'optimizer': optimizer.state_dict(),
                                 'iteration': iteration}, 
-                                is_best, filename=os.path.join(model_path, 'epoch%s.pth.tar' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_path, '0421_epoch%s.pth.tar' % str(epoch+1)), keep_all=False)
 
             print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
@@ -985,108 +1005,6 @@ def validate(data_loader, model, epoch, segment=True):
         print('Loss {loss.avg:.4f}\t'
             'Acc: {acc.avg:.4f} \t'.format(loss=losses, acc=accuracy))
         return losses.avg, accuracy.avg
-
-def train_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.train()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['x'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,L,F,H,W) = features.shape
-        batch = 1
-
-        features = features.view(B*L,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        # print(f"features shape: {features.shape}")
-        # print(f"mask shape: {input_mask.shape}")
-
-        mask_pred, _ = segment_model(features)
-
-        # print(f"mask pred shape: {mask_pred.shape}")
-
-        loss = criterion(mask_pred, input_mask)
-
-        # losses.update(loss['loss'].item(), B)
-        # optimizer.zero_grad()
-        # loss['loss'].backward()
-        # optimizer.step()
-
-        losses.update(loss.item(), B)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    # return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
-    return losses.local_avg
-
-def val_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.eval()
-    global iteration
-
-    with torch.no_grad():
-        for idx, input in tqdm(enumerate(data_loader), total=len(data_loader)):
-
-            features = input['x'].to(cuda, dtype=torch.float32)
-            input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-            (B,L,F,H,W) = features.shape
-            batch = 1
-
-            features = features.view(B*L,F,H,W)
-            features = features.mean(dim=0)
-            features = features.view(batch,F,H,W)
-            input_mask = input_mask.view(batch,H,W)
-
-            # print(f"features shape: {features.shape}")
-            # print(f"mask shape: {input_mask.shape}")
-
-            mask_pred, _ = segment_model(features)
-
-            # print(f"mask pred shape: {mask_pred.shape}")
-
-            loss = criterion(mask_pred, input_mask)
-            # losses.update(loss['loss'].item(), B)
-
-            losses.update(loss.item(), B)
-
-    # return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
-    return losses.local_avg
-
-def predict_segment(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
-    segment_model.eval()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        features = input['x'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,F,H,W) = features.shape
-        batch = 1
-
-        # features = features.view(B*N,SL,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
-
-        mask_pred, _ = segment_model(features)
-
-    return mask_pred
 
 def set_path(args):
     if args.resume: exp_path = os.path.dirname(os.path.dirname(args.resume))

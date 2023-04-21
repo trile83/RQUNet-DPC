@@ -108,7 +108,7 @@ def stride_over_channels(x):
 class DPC_RNN(nn.Module):
     '''DPC with RNN'''
     def __init__(self, sample_size, device, num_seq=8, seq_len=5, pred_step=3, num_class=2, \
-        network='resnet50', model_weight='', freeze=False, dropout=0.5, segment=True):
+        network='resnet50', model_weight='', freeze=False, dropout=0.5, segment=True, segment_model='conv3d'):
 
         super(DPC_RNN, self).__init__()
         torch.cuda.manual_seed(233)
@@ -208,14 +208,22 @@ class DPC_RNN(nn.Module):
             self._initialize_weights(self.network_pred)
 
         # self.segment_head = UNet_VAE_old(num_classes=2,segment=True,in_channels=128)
-        self.segment_head = UNet_test(num_classes=2,segment=True,in_channels=128)
 
-        self.classification_layer = nn.Conv2d(
-            in_channels=128,
-            out_channels=2,
-            kernel_size=(3,3),
-            padding=1,
-        )
+        self.segment_model = segment_model
+
+        if self.segment_model == 'unet':
+            self.segment_head = UNet_test(num_classes=2,segment=True,in_channels=128)
+        elif self.segment_model == 'conv3d':
+            self.segment_head = SegmentationHead_3D(
+                input_dim=128, hidden_dim=10, output_dim=2
+            )
+        elif self.segment_model == 'conv2d':
+            self.segment_head = nn.Conv2d(
+                in_channels=128,
+                out_channels=2,
+                kernel_size=(3,3),
+                padding=1,
+            )
 
         # encoder_dim = self.param['feature_size']
         # gar_dim = 128
@@ -281,31 +289,66 @@ class DPC_RNN(nn.Module):
                 # print('last state shape: ', last_state.shape)
                 # print('last state squeeze shape: ', last_state.mean(dim=0).shape)
 
-                context = rearrange(context, "(b l2 n) sl c h w -> b l2 n sl c h w", n=N, l2=L2)
-                # print('context vector shape 1: ', context.shape)
-
-                context = reverse_seq(reverse_chunks(context,4),6)
-                # print('context vector shape 2: ', context.shape)
+                #### required steps for segmenting the context vector
+                # context = rearrange(context, "(b l2 n) sl c h w -> b l2 n sl c h w", n=N, l2=L2)
+                # context = reverse_seq(reverse_chunks(context, self.num_seq), self.seq_len)
 
                 # context = stride_over_channels(context)
                 # print('context vector shape after striding: ', context.shape)
 
-                # output, _ = self.segment_head(context.to(cuda, dtype=torch.float32))
-                context = context.to(cuda, dtype=torch.float32)
+                # context = context.to(cuda, dtype=torch.float32)
 
                 # output, _ = self.segment_head(last_state.mean(dim=0))
 
+                ### using last_state vector
                 ##### works as of 03/23/2023
-                # output = self.classification_layer(last_state.mean(dim=0))
+                # output = self.classification_layer(last_state.mean(dim=0)) ## conv2d
 
-                # output = self.classification_layer(context.mean(dim=1))
-                output, _ = self.segment_head(context.mean(dim=1).to(cuda, dtype=torch.float32))
+                #### works for UNet
+                # output, _ = self.segment_head(last_state.mean(dim=0))
 
-                # output = self.classification_layer(stride_over_channels(last_state))
+                # output = self.head(last_state) ## conv3d
+
+                #######
+                if self.segment_model == 'unet':
+                    output, _ = self.segment_head(last_state.mean(dim=0))
+                elif self.segment_model == 'conv3d':
+                    last_state = rearrange(last_state, "b t c h w -> b c t h w")
+                    output = self.segment_head(last_state)
+                    output = rearrange(output, "b c t h w -> b t c h w")
+                    output = output.mean(dim=0)
+                elif self.segment_model == 'conv2d':
+                    output = self.segment_head(last_state.mean(dim=0))
+
+                #######
+
+                ### using context vector
+
+                # output = self.classification_layer(context.mean(dim=1)) ## conv2d
+                # output, _ = self.segment_head(context.mean(dim=1))
+
+                ##### segment using conv3d
+                # context = rearrange(context, "b t c h w -> b c t h w")
+                # output = self.head(context)
+                # output = rearrange(output, "b c t h w -> b t c h w")
+                # output = output.mean(dim=1)
+
+                #######
+                # if self.segment_model == 'unet':
+                #     output, _ = self.segment_head(context.mean(dim=1))
+                # elif self.segment_model == 'conv3d':
+                #     context = rearrange(context, "b t c h w -> b c t h w")
+                #     output = self.segment_head(context)
+                #     output = rearrange(output, "b c t h w -> b t c h w")
+                #     output = output.mean(dim=1)
+                # elif self.segment_model == 'conv2d':
+                #     output = self.segment_head(context.mean(dim=1))
+
+                #######
 
                 # print('output shape: ', output.shape)
 
-                ##################3
+                ##################
                 # # print('feature in dpc shape: ', feats.shape)
                 # context, _ = self.agg(feats)
                 # # context = context[:,-1,:].unsqueeze(1) # works

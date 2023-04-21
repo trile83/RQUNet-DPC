@@ -37,6 +37,7 @@ def rescale_image(
         image = (image - np.min(image, initial=highest_value, where=mask)) \
             / (np.max(image, initial=highest_value, where=mask)
                 - np.min(image, initial=highest_value, where=mask))
+        
     elif rescale_type == 'per-ts':
         image = (image - np.min(image)) / (np.max(image) - np.min(image))
 
