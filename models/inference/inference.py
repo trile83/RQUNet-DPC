@@ -452,6 +452,27 @@ def sliding_window_tiler(
             mode=pad_style,
             constant_value=constant_value
         )
+    
+    if model_option == 'decision-tree':
+
+        tiler_image = Tiler(
+            data_shape=xraster.shape,
+            tile_shape=(tile_channels, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+        # Define the tiler and merger based on the output size of the prediction
+        tiler_mask = Tiler(
+            data_shape=(n_classes, xraster.shape[1], xraster.shape[2]),
+            tile_shape=(1,tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
 
     elif model_option == 'dpc-unet':
 
@@ -654,10 +675,29 @@ def sliding_window_tiler(
             # batch = model.predict(batch, batch_size=batch_size)
             batch = model(x)[0]
             # batch = np.moveaxis(batch, -1, 1)
-            # print("AFTER PREDICT", batch.shape, batch_id)
+            print("AFTER PREDICT", batch.shape, batch_id)
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
+
+    elif model_option == 'decision-tree':
+
+        for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
+
+            # print(batch.shape)
+            batch = np.squeeze(batch)
+            batch = np.transpose(batch, (0,2,3,1))
+            x = batch.reshape((batch.shape[0]*batch.shape[1]*batch.shape[2], batch.shape[3]))
+            # print(x.shape)
+
+            output = model.predict(x)
+
+            # print(output.shape)
+
+            output = output.reshape((batch.shape[0],1,batch.shape[1],batch.shape[2]))
+
+            # Merge the updated data in the array
+            merger.add_batch(batch_id, batch_size, output)
 
     elif model_option == '3d-unet':
 

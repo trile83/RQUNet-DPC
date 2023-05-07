@@ -34,6 +34,7 @@ from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
 from benchmod.convgru import ConvGRU_Seg
 from unet3d.unet3d import UNet3D
 from unet.unet_test import UNet_test
+import pickle
 
 torch.cuda.empty_cache()
 torch.backends.cudnn.benchmark = True
@@ -462,6 +463,41 @@ def main():
             model_option=model_option
         )
 
+    elif model_option == 'decision-tree':
+        model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+        filename = f"{model_dir}decisiontree_model_0505.sav"
+
+        clf = pickle.load(open(filename, 'rb'))
+
+        if args.rescale == 'per-ts':
+            train_ts_set = rescale_image(train_ts_set, args.rescale)
+
+        xraster = train_ts_set[:args.ts_length,:,:,:].mean(axis=0)
+
+        print(xraster.shape)
+
+        if hls:
+            temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
+        else:
+            temporary_tif = xr.where(xraster > -1000, xraster, 2000)
+
+        # temporary_tif = rescale_image(temporary_tif)
+
+        prediction = inference.sliding_window_tiler(
+            xraster=temporary_tif,
+            model=clf,
+            n_classes=args.num_classes,
+            overlap=0.5,
+            batch_size=32,
+            standardization=standardization,
+            mean=0,
+            std=0,
+            normalize=normalization,
+            rescale=args.rescale,
+            model_option=model_option
+        )
+
+
     elif model_option == '3d-unet':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
         model = UNet3D(in_channel=10, n_classes=args.num_classes)
@@ -503,11 +539,12 @@ def main():
         )
     
     elif model_option == 'convlstm':
+        hidden_dim = 200
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
         model = ConvLSTM_Seg(
             num_classes=args.num_classes,
             input_size=(input_size,input_size),
-            hidden_dim=160,
+            hidden_dim=hidden_dim,
             input_dim=10,
             kernel_size=(3, 3)
             )
@@ -518,7 +555,15 @@ def main():
 
         # model_checkpoint = f'{str(model_dir)}convlstm_0405_10band_epoch_99.pth'
 
-        model_checkpoint = f'{str(model_dir)}convlstm_0420_10band_epoch_95.pth'
+        # model_checkpoint = f'{str(model_dir)}convlstm_0420_10band_epoch_95.pth' # train w ts01 and ts07
+
+        if hidden_dim == 160:
+            model_checkpoint = f'{str(model_dir)}convlstm_0504_10band_ts01_epoch_85.pth' # w only ts01
+        elif hidden_dim == 180:
+            model_checkpoint = f'{str(model_dir)}convlstm_0504_new_10band_ts01_epoch_95.pth'
+        elif hidden_dim == 200:
+            model_checkpoint = f'{str(model_dir)}convlstm_0504_hidden200_10band_ts01_epoch_63.pth'
+
         if torch.cuda.is_available():
             model = model.to(cuda)
 
@@ -572,7 +617,10 @@ def main():
 
         # model_checkpoint = f'{str(model_dir)}convgru_0320_10band_norm_epoch_153.pth' # cloud
 
-        model_checkpoint = f'{str(model_dir)}convgru_0405_10band_epoch_98.pth'
+        # model_checkpoint = f'{str(model_dir)}convgru_0405_10band_epoch_98.pth'
+
+        # train with TS01 and TS07
+        model_checkpoint = f'{str(model_dir)}convgru_0421_10band_multiple_ts_epoch_92.pth'
         if torch.cuda.is_available():
             model = model.to(cuda)
 
@@ -642,12 +690,18 @@ def main():
             ## unet segment
             if args.segment_model == 'unet':
                 # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0406-laststate_10band_ts01_epoch25.pth'
-                model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0421-unet_10band_ts01_epoch18.pth'
+                # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0421-unet_10band_ts01_epoch18.pth'
+                model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_10band_ts01_epoch16.pth'
 
             elif args.segment_model == 'conv3d':
                 ## segment 3d
                 # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0410-conv3d_10band_ts01_epoch11.pth'
-                model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0420-conv3d_10band_ts01_epoch10.pth'
+                # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0420-conv3d_10band_ts01_epoch10.pth'
+
+                model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0421-conv3d_10band_ts01_epoch5.pth'
+
+            elif args.segment_model == 'conv2d':
+                model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-conv2d_10band_ts01_epoch23.pth'
 
             ## cloud
             # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0323-cloud-stride_10band_ts01_epoch7.pth'
@@ -712,12 +766,17 @@ def main():
     print(f'ref im shape: {ref_im.shape}')
     (h,w,c) = ref_im.shape
 
-    if prediction.shape[0] > 1:
-        prediction = np.argmax(prediction, axis=0)
+    if model_option != "decision-tree":
+
+        if prediction.shape[0] > 1:
+            prediction = np.argmax(prediction, axis=0)
+        else:
+            prediction = np.squeeze(
+                np.where(prediction > 0.5, 1, 0).astype(np.int16)
+            )
+
     else:
-        prediction = np.squeeze(
-            np.where(prediction > 0.5, 1, 0).astype(np.int16)
-        )
+        prediction = np.squeeze(prediction)
 
     if not hls:
         accuracy, precision, recall, f1_score, iou = get_accuracy(prediction, mask_arr)
@@ -730,7 +789,7 @@ def main():
     plt.figure(figsize=(20,20))
     plt.subplot(1,2,1)
     plt.title("Image")
-    image = np.transpose(train_ts_set[5,:3,:,:], (1,2,0))
+    image = np.transpose(train_ts_set[0,:3,:,:], (1,2,0))
     if hls:
         image= rescale_image(xr.where(image > -9000, image, 2000))
     else:
@@ -738,12 +797,11 @@ def main():
     # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
     plt.imshow(rescale_truncate(image))
     # # plt.savefig(f"{str(data_dir)}{ts_name}-input.png")
-    # plt.subplot(1,3,2)
+    # plt.subplot(1,2,2)
     # plt.title("Segmentation Label")
-    # # image = np.transpose(train_mask_set[:,:], (0,1))
-    # image = train_mask_set
+    # image = mask_arr
     # plt.imshow(image)
-    # # plt.savefig(f"{str(data_dir)}{ts_name}-label.png")
+    # plt.savefig(f"{str(data_dir)}{ts_name}-label.png", dpi=300, bbox_inches='tight')
 
     plt.subplot(1,2,2)
     plt.title(f"Segmentation Prediction")
@@ -752,7 +810,7 @@ def main():
     if model_option == 'dpc-unet':
         plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}-{args.segment_model}.png", dpi=300, bbox_inches='tight')
     else:
-        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-0418.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-0504.png", dpi=300, bbox_inches='tight')
 
     plt.close()
 
@@ -835,3 +893,5 @@ if __name__ == '__main__':
     # python models/predict_sliding.py --gpu 0 --model convgru --dataset PEV_2021
     # python models/predict_sliding.py --gpu 0 --model convlstm --dataset PEV_2021
     # python models/predict_sliding.py --gpu 0 --model 3d-unet --dataset Tappan01 --img_dim 16 --ts_length 16
+    # python models/predict_sliding.py --gpu 0 --model decision-tree --dataset Tappan01
+    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset Tappan01 --segment_model conv2d

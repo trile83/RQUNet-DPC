@@ -130,6 +130,8 @@ class DPC_RNN(nn.Module):
         self.param['num_layers'] = 1 # param for GRU
         self.param['hidden_size'] = 0
 
+        hidden_dim = 128
+
         print('Initializing backbone')
         
         if network == "unet-vae" or network == "rqunet-vae-encoder" or network == "unet":
@@ -162,7 +164,7 @@ class DPC_RNN(nn.Module):
 
             ## DPC code | BlackSky Code
             self.agg = ConvGRU(input_size=self.param['feature_size'],
-                               hidden_size=128,
+                               hidden_size=hidden_dim,
                                kernel_size=3,
                                num_layers=self.param['num_layers'])
             
@@ -212,14 +214,14 @@ class DPC_RNN(nn.Module):
         self.segment_model = segment_model
 
         if self.segment_model == 'unet':
-            self.segment_head = UNet_test(num_classes=2,segment=True,in_channels=128)
+            self.segment_head = UNet_test(num_classes=2,segment=True,in_channels=hidden_dim)
         elif self.segment_model == 'conv3d':
             self.segment_head = SegmentationHead_3D(
-                input_dim=128, hidden_dim=10, output_dim=2
+                input_dim=hidden_dim, hidden_dim=10, output_dim=2
             )
         elif self.segment_model == 'conv2d':
             self.segment_head = nn.Conv2d(
-                in_channels=128,
+                in_channels=hidden_dim,
                 out_channels=2,
                 kernel_size=(3,3),
                 padding=1,

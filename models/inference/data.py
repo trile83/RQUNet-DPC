@@ -13,7 +13,7 @@ import pandas as pd
 import rioxarray as rxr
 # import tensorflow as tf
 import torch
-from numba import jit
+# from numba import jit
 
 try:
     import cupy as cp
@@ -589,54 +589,54 @@ def standardize_batch(
     return image_batch
 
 
-@jit(nopython=True)
-def standardize_image_numba(
-    image, standardization_type, mean: list = None,
-    std: list = None
-):
-    """
-    TODO: FIX STABILITY
-    Standardize image within parameter, simple scaling of values.
-    Loca, Global, and Mixed options.
-    """
-    if standardization_type == 'local':
-        for i in range(image.shape[-1]):  # for each channel in the image
-            image[:, :, i] = (image[:, :, i] - np.mean(image[:, :, i])) / \
-                (np.std(image[:, :, i]) + 1e-8)
-    elif standardization_type == 'global':
-        print("me")
-    else:
-        print("muh")
-        #    if np.random.random_sample() > 0.75:
-        #        for i in range(x.shape[-1]):  # for each channel in the image
-        #            x[:, :, i] = (x[:, :, i] - self.conf.mean[i]) / \
-        #                (self.conf.std[i] + 1e-8)
-        #    else:
-        #        for i in range(x.shape[-1]):  # for each channel in the image
-        #            x[:, :, i] = (x[:, :, i] - np.mean(x[:, :, i])) / \
-        #                (np.std(x[:, :, i]) + 1e-8)
-    return image
+# @jit(nopython=True)
+# def standardize_image_numba(
+#     image, standardization_type, mean: list = None,
+#     std: list = None
+# ):
+#     """
+#     TODO: FIX STABILITY
+#     Standardize image within parameter, simple scaling of values.
+#     Loca, Global, and Mixed options.
+#     """
+#     if standardization_type == 'local':
+#         for i in range(image.shape[-1]):  # for each channel in the image
+#             image[:, :, i] = (image[:, :, i] - np.mean(image[:, :, i])) / \
+#                 (np.std(image[:, :, i]) + 1e-8)
+#     elif standardization_type == 'global':
+#         print("me")
+#     else:
+#         print("muh")
+#         #    if np.random.random_sample() > 0.75:
+#         #        for i in range(x.shape[-1]):  # for each channel in the image
+#         #            x[:, :, i] = (x[:, :, i] - self.conf.mean[i]) / \
+#         #                (self.conf.std[i] + 1e-8)
+#         #    else:
+#         #        for i in range(x.shape[-1]):  # for each channel in the image
+#         #            x[:, :, i] = (x[:, :, i] - np.mean(x[:, :, i])) / \
+#         #                (np.std(x[:, :, i]) + 1e-8)
+#     return image
 
 
-def standardize_batch_numba(
-    image_batch, standardization_type, mean: list = None,
-    std: list = None
-):
-    """
-    TODO: FIX STABILITY
-    Standardize image within parameter, simple scaling of values.
-    Loca, Global, and Mixed options.
-    """
-    if standardization_type == 'local':
-        for item in range(image_batch.shape[0]):
-            image_batch[item] = (
-                image_batch[item] - np.mean(image_batch[item], axis=(0, 1))) \
-                / (np.std(image_batch[item], axis=(0, 1)) + 1e-8)
-    elif standardization_type == 'global':
-        print("me")
-    else:
-        print("muh")
-    return image_batch
+# def standardize_batch_numba(
+#     image_batch, standardization_type, mean: list = None,
+#     std: list = None
+# ):
+#     """
+#     TODO: FIX STABILITY
+#     Standardize image within parameter, simple scaling of values.
+#     Loca, Global, and Mixed options.
+#     """
+#     if standardization_type == 'local':
+#         for item in range(image_batch.shape[0]):
+#             image_batch[item] = (
+#                 image_batch[item] - np.mean(image_batch[item], axis=(0, 1))) \
+#                 / (np.std(image_batch[item], axis=(0, 1)) + 1e-8)
+#     elif standardization_type == 'global':
+#         print("me")
+#     else:
+#         print("muh")
+#     return image_batch
 
 
 if __name__ == "__main__":

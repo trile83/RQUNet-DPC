@@ -24,6 +24,8 @@ import h5py
 import logging
 import cv2
 import rioxarray as rxr
+from sklearn import tree
+import pickle
 from tensorboardX import SummaryWriter
 
 torch.backends.cudnn.benchmark = True
@@ -213,83 +215,6 @@ class segmentDataset(Dataset):
         }
 
 
-def get_seq(sequence, seq_length):
-    '''
-    sequence: long time-series input
-    seq_length: length of window for time-series chunk; default = 5
-    return: array with all time-series chunk; prediction size =1, num_seq = 4
-    '''
-    (I,L,C,H,W) = sequence.shape
-    all_arr = np.zeros((I,L-seq_length+1,seq_length,C,H,W))
-    for j in range(I):
-        for i in range(seq_length, L+1):
-            array = sequence[j,i-seq_length:i,:,:,:] # SL, C, H, W
-            all_arr[j,i-seq_length] = array
-
-        # for i in range(L-seq_length): # same results
-        #     array = sequence[j,i:i+seq_length,:,:,:] # SL, C, H, W
-        #     all_arr[j,i] = array
-
-    return all_arr
-
-def get_chunks(windows, num_seq):
-    '''
-    TODO: match with get_seq function
-    windows: number of windows in 1 time-series
-    number: number of window for time-series chunk; default = 4
-    return: array with all time-series chunk; prediction size =1, num_seq (N) = 4; N x 6 x 5 x 32 x 32
-    '''
-    (I,L1,SL,C,H,W) = windows.shape
-    all_arr = np.zeros((I,L1-num_seq+1,num_seq,SL,C,H,W))
-    for j in range(I):
-        for i in range(num_seq, L1+1):
-            array = windows[j,i-num_seq:i,:,:,:,:] # N, SL, C, H, W
-            if not array.any():
-                print(f"i {i}")
-            all_arr[j,i-num_seq] = array
-
-    return all_arr
-
-def reverse_chunks(chunks, num_seq):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L2,N,SL,C,H,W) = chunks.shape
-    
-    all_arr = np.zeros((I,L2+num_seq-1,SL,C,H,W))
-    for j in range(I):
-        for i in range(L2):
-            if i < L2-1:
-                array = chunks[j,i,0,:,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:,:] = array
-            elif i == L2-1:
-                array = chunks[j,i,:,:,:,:,:]
-                all_arr[j,i:i+num_seq,:,:,:,:] = array
-            del array
-
-    # for j in range(I):
-    #     all_arr[j,L2+num_seq-1,:,:,:,:] = chunks[j,L2-1,-1,:,:,:,:]
-
-    return all_arr
-
-def reverse_seq(window, seq_length):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L1,SL,C,H,W) = window.shape
-    all_arr = np.zeros((I,L1+seq_length-1,C,H,W))
-    for j in range(I):
-        for i in range(L1):
-            if i < L1-1:
-                array = window[j,i,0,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:] = array
-            elif i == L1-1:
-                array = window[j,i,:,:,:,:]
-                all_arr[j,i:i+seq_length,:,:,:] = array
-            del array
-
-    return all_arr
-
 def chipper(ts_stack, mask, input_size=32):
     '''
     stack: input time-series stack to be chipped (TxCxHxW)
@@ -423,6 +348,37 @@ def get_train_set(args, list_ts):
     return train_ts_set, train_mask_set, args.num_val*len(list_ts)
 
 
+def train_decision_tree(train_ts_set, train_ts_mask):
+
+    print(train_ts_set.shape)
+    print(train_ts_mask.shape)
+    ts_mean = train_ts_set.mean(axis=1)
+    ts_mean = np.squeeze(ts_mean)
+    ts_mean = np.transpose(ts_mean, (0,2,3,1))
+    print(ts_mean.shape)
+
+    X = ts_mean.reshape((ts_mean.shape[0]*ts_mean.shape[1]*ts_mean.shape[2], ts_mean.shape[3]))
+    Y = train_ts_mask.reshape((train_ts_mask.shape[0]*train_ts_mask.shape[1]*train_ts_mask.shape[2]))
+
+    print("X shape: ", X.shape)
+    print("Y shape: ", Y.shape)
+
+    ## save model
+    filename = '/home/geoint/tri/dpc/models/checkpoints/decisiontree_model_0505.sav'
+    if not os.path.isfile(filename):
+        ## decision tree model
+        clf = tree.DecisionTreeClassifier(criterion='entropy')
+        clf = clf.fit(X, Y)
+        pickle.dump(clf, open(filename, 'wb'))
+    else:
+        clf = pickle.load(open(filename, 'rb'))
+
+    print(clf.feature_importances_)
+
+    # tree.plot_tree(clf)
+
+    return clf
+
 
 class EarlyStopper:
     def __init__(self, patience=1, min_delta=0):
@@ -451,6 +407,7 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
 
+    # list_ts = ['Tappan01','Tappan07']
     list_ts = ['Tappan01']
     ts_name=args.dataset
 
@@ -458,223 +415,8 @@ def main():
 
     train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
 
-    ### dpc model ###
+    model = train_decision_tree(train_ts_set, train_mask_set)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    model_option = args.model
-    if model_option == "convlstm":
-        model = ConvLSTM_Seg(
-            num_classes=args.num_classes,
-            input_size=(input_size,input_size),
-            hidden_dim=200,
-            input_dim=10,
-            kernel_size=(3, 3)
-            )
-    elif model_option == "convgru":
-        model = ConvGRU_Seg(
-            num_classes=args.num_classes,
-            input_size=(input_size,input_size),
-            input_dim=10,
-            kernel_size=(3, 3),
-            hidden_dim=180,
-            )
-    elif model_option == '3d-unet':
-        model = UNet3D(in_channel=10, n_classes=args.num_classes)
-
-    # model = nn.DataParallel(model)
-
-    if torch.cuda.is_available():
-        model = model.to(cuda)
-
-    global criterion; 
-    criterion_type = "crossentropy"
-    if criterion_type == "crossentropy":
-        # criterion = models.losses.MultiTemporalCrossEntropy()
-        criterion = criterion = torch.nn.CrossEntropyLoss()
-    elif criterion_type == "focal_tverski":
-        criterion = models.losses.FocalTversky()
-    elif criterion_type == "dice":
-        criterion = models.losses.MultiTemporalDiceLoss()
-
-    ### optimizer ###
-    # params = model.parameters()
-    # optimizer = optim.Adam(params, lr=0.0001, weight_decay=0.0)
-
-    segment_optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    args.old_lr = None
-
-    ### load data ###
-
-    print("Start training process!")
-
-    # setup tools
-    global de_normalize; de_normalize = denorm()
-    global img_path; img_path, model_path = set_path(args)
-    model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
-    
-    ### main loop ###
-    train_loss_lst = []
-    val_loss_lst = []
-
-    # print(f"train mask set shape: {train_mask_set.shape}")
-
-    train_seg_set = tsDataset(train_ts_set[:-num_val],  train_mask_set[:-num_val])
-    val_seg_set = tsDataset(train_ts_set[-num_val:],  train_mask_set[-num_val:])
-    loader_args_1 = dict(batch_size=args.batch_size, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
-    train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
-    val_segment_dl = DataLoader(val_seg_set, **loader_args_1)
-
-    print(f"Length of segmentation input training set {len(train_segment_dl)}")
-    print("Start segmentation training!")
-
-    best_acc = 0
-    min_loss = np.inf
-
-    early_stopper = EarlyStopper(patience=10, min_delta=0.2)
-
-    for epoch in range(args.start_epoch, args.epochs):
-        train_loss = train(train_segment_dl, model, segment_optimizer)
-        val_loss, im, mask, mask_pred = val(val_segment_dl, model, epoch)
-
-        # saved loss value in list
-        train_loss_lst.append(train_loss)
-        val_loss_lst.append(val_loss)
-
-        print(f"epoch: {epoch+1} train loss: {train_loss} val loss: {val_loss}")
-        # print(f"val loss: {val_loss}")
-
-        # save check_point
-        is_best = val_loss < min_loss
-
-        if is_best:
-            min_loss = val_loss
-
-            # output predictions
-            index_array = torch.argmax(mask_pred, dim=1)
-
-            plt.figure(figsize=(20,20))
-            plt.subplot(1,3,1)
-            plt.title("Image")
-            x = im
-            y = mask
-            image = np.transpose(x[0,5,:3,:,:].numpy(), (1,2,0))
-            # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-            image = rescale_truncate(image)
-            plt.imshow(image)
-            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-input.png")
-            plt.subplot(1,3,2)
-            plt.title("Segmentation Label")
-            image = np.transpose(y[0,:,:], (0,1))
-            plt.imshow(image)
-            # plt.savefig(f"{str(data_dir)}{ts_name}-{str(idx)}-label.png")
-            plt.subplot(1,3,3)
-            plt.title(f"Segmentation Prediction")
-            image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
-            plt.imshow(image)
-            plt.savefig(f"/home/geoint/tri/dpc/output/best-{epoch}-{model_option}-0421-pred.png")
-            plt.close()
-
-            # save unet segment weights
-            save_checkpoint({'epoch': epoch+1,
-                            'net': args.net,
-                            'state_dict': model.state_dict(),
-                            'min_loss': min_loss,
-                            'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=\
-                                os.path.join(model_dir, \
-                                    f'{model_option}_0504_hidden200_10band_ts01_epoch_%s.pth' % str(epoch+1)), keep_all=False)
-            
-        # early stopping
-        if early_stopper.early_stop(val_loss, min_loss):
-            print("Stop at epoch:", epoch+1)
-            break
-        
-    plt.plot(train_loss_lst, color ="blue")
-    plt.plot(val_loss_lst, color = "red")
-    plt.savefig(f"/home/geoint/tri/dpc_test_out/{model_option}_train_loss_0504.png")
-    plt.close()
-
-    print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
-
-
-def train(data_loader, segment_model, optimizer):
-    losses = AverageMeter()
-    segment_model.train()
-    global iteration
-
-    for idx, input in enumerate(data_loader):
-
-        input_im = input['ts'].to(cuda, dtype=torch.float32)
-        input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-        (B,L,F,H,W) = input_im.shape
-        batch = 1
-
-        input_mask = input_mask.view(batch,H,W)
-
-        # print(f"features shape: {features.shape}")
-        # print(f"mask shape: {input_mask.shape}")
-
-        mask_pred = segment_model(input_im)
-
-        # print(f"mask pred shape: {mask_pred.shape}")
-
-        loss = criterion(mask_pred, input_mask)
-
-        losses.update(loss.item(), B)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    return losses.local_avg
-
-
-def val(data_loader, segment_model, epoch):
-    losses = AverageMeter()
-    segment_model.eval()
-    global iteration
-
-    with torch.no_grad():
-        for idx, input in tqdm(enumerate(data_loader), total=len(data_loader)):
-
-            input_im = input['ts'].to(cuda, dtype=torch.float32)
-            input_mask = input['mask'].to(cuda, dtype=torch.long)
-
-            (B,L,F,H,W) = input_im.shape
-            batch = 1
-
-            input_mask = input_mask.view(batch,H,W)
-
-            # print(f"features shape: {features.shape}")
-            # print(f"mask shape: {input_mask.shape}")
-
-            mask_pred = segment_model(input_im)
-
-            # print(f"mask pred shape: {mask_pred.shape}")
-
-            loss = criterion(mask_pred, input_mask)
-
-            losses.update(loss.item(), B)
-
-    return losses.local_avg, input['ts'], input['mask'], mask_pred
-
-
-def set_path(args):
-    if args.resume: exp_path = os.path.dirname(os.path.dirname(args.resume))
-    else:
-        exp_path = 'log_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
-bs{args.batch_size}_lr{1}_seq{args.num_seq}_pred{args.pred_step}_len{args.seq_len}_ds{args.ds}_\
-train-{args.train_what}{2}'.format(
-                    'r%s' % args.net[6::], \
-                    args.old_lr if args.old_lr is not None else args.lr, \
-                    '_pt=%s' % args.pretrain.replace('/','-') if args.pretrain else '', \
-                    args=args)
-    img_path = os.path.join(exp_path, 'img')
-    model_path = os.path.join(exp_path, 'model')
-    if not os.path.exists(img_path): os.makedirs(img_path)
-    if not os.path.exists(model_path): os.makedirs(model_path)
-    return img_path, model_path
 
 if __name__ == '__main__':
     main()

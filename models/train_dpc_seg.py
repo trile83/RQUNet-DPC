@@ -41,7 +41,7 @@ parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=20, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=30, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -57,7 +57,7 @@ parser.add_argument('--num_val', default=10, type=int)
 parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
-parser.add_argument('--segment_model', default='conv3d', type=str)
+parser.add_argument('--segment_model', default='conv2d', type=str)
 
 def rescale_truncate(image):
     if np.amin(image) < 0:
@@ -365,6 +365,70 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
+def get_train_set(args, list_ts):
+    
+    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+
+    train_ts_set = []
+    train_mask_set = []
+
+    temp_ts_set = []
+    temp_mask_set = []
+    
+    for ts_name in list_ts:
+    
+        print(ts_name)
+        with h5py.File(filename, "r") as file:
+            if ts_name == 'Tappan06' or ts_name == 'Tappan07':
+                ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
+                mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+                # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
+                # ref_im = rxr.open_rasterio(ref_im_fl)
+            else:
+                ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+                mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+        input_size = args.img_dim
+        total_ts_len = args.ts_length # L
+        padding_size = args.pad_size
+
+        ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+
+        for i in range(args.num_chips+args.num_val):
+            ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=args.img_dim)
+            ts = np.squeeze(ts)
+
+            if args.rescale == 'per-ts':
+                ts = rescale_image(ts, args.rescale)
+            else:
+                for frame in range(ts.shape[0]):
+                    if args.normalization is not None:
+                        ts[frame] = normalize_image(ts[frame], args.normalization)
+
+                    if args.rescale is not None:
+                        ts[frame] = rescale_image(ts[frame],args.rescale)
+
+                    if args.standardization is not None:
+                        ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            mask = np.squeeze(mask)
+
+            # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+
+            temp_ts_set.append(ts)
+            temp_mask_set.append(mask)
+
+    train_ts_set = np.stack(temp_ts_set, axis=0)
+    train_mask_set = np.stack(temp_mask_set, axis=0)
+
+    print(f"train ts set shape: {train_ts_set.shape}")
+    print(f"train mask set shape: {train_mask_set.shape}")
+
+    return train_ts_set, train_mask_set, args.num_val*len(list_ts)
+
+
 class EarlyStopper:
     def __init__(self, patience=1, min_delta=0):
         self.patience = patience
@@ -393,111 +457,16 @@ def main():
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
     ts_name=args.dataset
-    if 'PEV' in args.dataset or 'PFV' in args.dataset:
-        hls = True
-    else:
-        hls = False
-
-    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
-    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
-    with h5py.File(filename, "r") as file:
-        # print("Keys: %s" % file.keys())
-        ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-        mask_arr = file[f'{str(ts_name)}_mask'][()]
+    list_ts = ['Tappan01']
 
     input_size = args.img_dim
-    total_ts_len = args.ts_length # L
 
-    padding_size = args.pad_size
+    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
 
-    seq_length = args.seq_len
-    num_seq = args.num_seq
-
-    # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
-    # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
-
-    train_ts_set = []
-    train_mask_set = []
-
-    ### get RGB image
-    # ts_arr = ts_arr[:,1:4,:,:]
-    # ts_arr = ts_arr[:,::-1,:,:]
-
-    ## get different chips in the Tappan Square for multiple time series
-    # iteration = 10 # I
-    h_list_train =[10,230,30,40,50,70,80,90,100,110,180,20]
-    w_list_train =[15,240,35,45,55,75,85,95,105,115,195,25]
-
-    # h_list_train =[10,20]
-    # w_list_train =[15,25]
-
-    num_val = args.num_val
-    num_chips = args.num_chips
-
-    # Preprocess parameters
-    standardization = args.standardization
-    normalization = args.normalization
-
-    temp_ts_set = []
-    temp_mask_set = []
-
-    ts_arr = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
-
-    # for i in range(len(h_list_train)):
-    #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list_train[i], w_list_train[i], \
-    #         input_size=input_size)
-
-    for i in range(num_chips+num_val):
-        ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=input_size)
-        if np.any(ts == -9999):
-            continue
-        ts = np.squeeze(ts)
-
-        if args.rescale == 'per-ts':
-            ts = rescale_image(ts, args.rescale)
-        else:
-            for frame in range(ts.shape[0]):
-                if args.normalization is not None:
-                    ts[frame] = normalize_image(ts[frame], args.normalization)
-
-                if args.rescale is not None:
-                    ts[frame] = rescale_image(ts[frame],args.rescale)
-
-                if args.standardization is not None:
-                    ts[frame] = standardize_image(ts[frame],args.standardization)
-            
-        # t_im = np.transpose(ts[0], (1,2,0))
-        # t_im = rescale_truncate(t_im[:,:,:3])
-        # plt.imshow(t_im)
-        # plt.savefig('/home/geoint/tri/dpc/test_im.png')
-        # plt.close()
-
-
-        mask = np.squeeze(mask)
-
-        # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
-
-        temp_ts_set.append(ts)
-        temp_mask_set.append(mask)
-
-    ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = ts_set[:,:total_ts_len]
-    mask_set = np.stack(temp_mask_set, axis=0)
-    train_mask_set = mask_set[:]
-
-    print(f'train ts set max pixel: {np.max(train_ts_set)}')
-    print(f'train ts set min pixel: {np.min(train_ts_set)}')
-
-    del ts_set
-    del mask_set
-
-    print(f"train ts set shape: {train_ts_set.shape}")
-    print(f"train mask set shape: {train_mask_set.shape}")
-
-    im_set = get_seq(train_ts_set, seq_length) #(I,L1,SL,C,H,W)
+    im_set = get_seq(train_ts_set, args.seq_len) #(I,L1,SL,C,H,W)
     print(f'window sequence shape: {im_set.shape}')
 
-    new_set = get_chunks(im_set, num_seq)
+    new_set = get_chunks(im_set, args.num_seq)
 
     print(f'chunk sequence shape: {new_set.shape}') # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
 
@@ -671,7 +640,7 @@ def main():
                 plt.title(f"Segmentation Prediction")
                 image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
                 plt.imshow(image)
-                plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-0405-pred.png")
+                plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-0504-pred.png")
                 plt.close()
 
 
@@ -681,7 +650,7 @@ def main():
                                 'state_dict': model.state_dict(),
                                 'min_loss': min_loss,
                                 'optimizer': optimizer.state_dict()}, 
-                                is_best, filename=os.path.join(model_dir, f'dpc-{network}-encoder-0421-{args.segment_model}_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_dir, f'dpc-{network}-encoder-0504-{args.segment_model}_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
@@ -743,7 +712,7 @@ def main():
                                 'best_acc': best_acc,
                                 'optimizer': optimizer.state_dict(),
                                 'iteration': iteration}, 
-                                is_best, filename=os.path.join(model_path, '0421_epoch%s.pth.tar' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_path, '0421_new_epoch%s.pth.tar' % str(epoch+1)), keep_all=False)
 
             print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
