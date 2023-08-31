@@ -10,8 +10,6 @@ Created on Wed Mar  2 15:40:37 2022
 import disstl.models as models
 import torch
 import torchvision
-from disstl.datasets.smart.datasets import from_cube
-from disstl.datasets.transforms import ClipBands, MinMaxNormalize
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import exposure
@@ -158,15 +156,15 @@ if __name__ == '__main__':
     # prepare data
 
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
+    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     with h5py.File(filename, "r") as f:
         print("Keys: %s" % f.keys())
-        ts_arr = f['Tappan01_ts'][()]
+        ts_arr = f['Tappan01_PEV_ts'][()]
         mask_arr = f['Tappan01_mask'][()]
 
     # get RGB image
     ts_arr = ts_arr[:,1:4,:,:]
-    ts_arr = ts_arr[:,::-1,:,:]
+    # ts_arr = ts_arr[:,::-1,:,:]
 
     seq_length = 5
     num_seq = 4

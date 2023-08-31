@@ -1,0 +1,121 @@
+import numpy as np
+import rasterio
+from rasterio import features
+from rasterio.mask import mask
+import glob
+import re
+
+# the first one is your raster on the right
+# and the second one your red raster
+# resamp_dir = '/home/geoint/tri/resampled_senegal_hls/mode' # used for inital cut of raster
+
+tile='PEV'
+
+resamp_dir = f'/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}' # directory after trimming no-data border of cut raster
+hls_dir = '/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015'
+hls_cloud_dir = '/home/geoint/tri/hls-download'
+
+resamp_lst = sorted(glob.glob(resamp_dir+'/*.tif'))
+hls_lst = sorted(glob.glob(hls_dir+'/*.tif'))
+hls_cloud_lst = sorted(glob.glob(hls_cloud_dir+'/*Fmask.tif'))
+
+# print(resamp_lst)
+# print(hls_lst)
+
+cloud = False
+if cloud:
+    hls_lst = hls_cloud_lst
+else:
+    hls_lst = hls_lst
+
+for resamp_fl in resamp_lst:
+    year_resamp = re.search(r'WV(.*?).tif', resamp_fl).group(1)[3:7]
+    print("Year WV resamp: ", year_resamp)
+    for hls_fl in hls_lst:
+
+        if cloud:
+                name_hls = re.search(r'/hls-download/(.*?).v2.0.Fmask.tif', hls_fl).group(1)
+        else:
+            name_hls = re.search(r'/out_hls_cas2015/(.*?).v2.0.tif', hls_fl).group(1)
+
+            year_hls = re.search(r'V.(.*?)T', hls_fl).group(1)[:4]
+            print("Year HLS: ", year_hls)
+
+        cloud_fl = f'/home/geoint/tri/hls-download/{name_hls}.v2.0.Fmask.tif'
+
+        if tile not in hls_fl:
+            continue
+
+        # hls_fl = '/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015/HLS.S30.T28PFV.2017325T112351.v2.0.tif'
+
+        if year_resamp == year_hls:
+
+            with rasterio.open(resamp_fl) as src, \
+                    rasterio.open(hls_fl) as src_to_crop, \
+                    rasterio.open(cloud_fl) as src_cloud_to_crop:
+                
+                src_affine = src.meta.get("transform")
+
+                # name_resamp = re.search(r'/resampled_senegal_hls/mode/(.*?)_M1BS', resamp_fl).group(1)
+                if tile == 'PEV':
+                    name_resamp = re.search(r'/resampled_senegal_hls/trimmed/PEV/(.*?).tif', resamp_fl).group(1)
+                elif tile == 'PFV':
+                    name_resamp = re.search(r'/resampled_senegal_hls/trimmed/PFV/(.*?).tif', resamp_fl).group(1)
+
+
+                # Read the first band of the "mask" raster
+                band = src.read(1)
+                # Use the same value on each pixel with data
+                # in order to speedup the vectorization
+                band[np.where(band!=src.nodata)] = 1
+
+                geoms = []
+                for geometry, raster_value in features.shapes(band, transform=src_affine):
+                    # get the shape of the part of the raster
+                    # not containing "nodata"
+                    if raster_value == 1:
+                        geoms.append(geometry)
+
+                # crop the second raster using the
+                # previously computed shapes
+                try:
+                    out_img, out_transform = mask(
+                        dataset=src_to_crop,
+                        shapes=geoms,
+                        crop=True,
+                    )
+
+                    cloud_mask, out_transform_cloud = mask(
+                        dataset=src_cloud_to_crop,
+                        shapes=geoms,
+                        crop=True,
+                    )
+                except:
+                    continue
+
+                print(out_img.shape)
+
+                temp_arr = cloud_mask % 16
+                count_cloud = np.count_nonzero(temp_arr)
+
+                if count_cloud < 3000:
+
+                    # save the result
+                    # (don't forget to set the appropriate metadata)
+                    if cloud:
+                        out_fl_name = f'/home/geoint/tri/match-hls-sen/output-{tile}-cloud/{name_hls}-{name_resamp}-cloud.tif'
+                    else:
+                        # out_fl_name = f'/home/geoint/tri/match-hls-sen/output-PEV/{name_hls}-{name_resamp}.tif'
+                        out_fl_name = f'/home/geoint/tri/match-hls-sen/output-{tile}/{name_hls}-{name_resamp}.tif'
+
+                    with rasterio.open(
+                        out_fl_name,
+                        'w',
+                        driver='GTiff',
+                        height=out_img.shape[1],
+                        width=out_img.shape[2],
+                        count=src_to_crop.count,
+                        dtype=out_img.dtype,
+                        transform=out_transform,
+                    ) as dst:
+                        dst.write(out_img)

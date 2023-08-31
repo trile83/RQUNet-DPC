@@ -23,6 +23,7 @@ import logging
 import torchvision.utils as vutils
 import cv2
 import rioxarray as rxr
+import time
 from tensorboardX import SummaryWriter
 
 torch.cuda.empty_cache()
@@ -54,10 +55,11 @@ parser.add_argument('--pad_size', default=0, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
 parser.add_argument('--num_chips', default=100, type=int)
 parser.add_argument('--num_val', default=10, type=int)
+parser.add_argument('--hidden_dim', default=200, type=int)
 parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
-parser.add_argument('--segment_model', default='conv2d', type=str)
+parser.add_argument('--segment_model', default='unet', type=str)
 
 def rescale_truncate(image):
     if np.amin(image) < 0:
@@ -505,7 +507,8 @@ def main():
     model = DPC_RNN(sample_size=input_size,
                     device=device,
                     num_seq=args.num_seq, 
-                    seq_len=args.seq_len, 
+                    seq_len=args.seq_len,
+                    hidden_dim=args.hidden_dim,
                     network=network,
                     pred_step=1,
                     model_weight=model_checkpoint,
@@ -537,6 +540,8 @@ def main():
     ### load data ###
 
     print("Start training process!")
+
+    tic = time.time()
 
     # setup tools
     global de_normalize; de_normalize = denorm()
@@ -650,7 +655,7 @@ def main():
                                 'state_dict': model.state_dict(),
                                 'min_loss': min_loss,
                                 'optimizer': optimizer.state_dict()}, 
-                                is_best, filename=os.path.join(model_dir, f'dpc-{network}-encoder-0504-{args.segment_model}_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_dir, f'dpc-{network}-encoder-0504-{args.segment_model}_{args.hidden_dim}_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
@@ -665,10 +670,11 @@ def main():
 
         plt.plot(train_loss_out, color ="blue")
         plt.plot(val_loss_out, color = "red")
-        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0421.png")
+        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0506.png")
         plt.close()
 
         print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
+        print(f'Time required for training {time.time()-tic}')
 
     else:
         for idx, input in enumerate(train_dl):
@@ -712,7 +718,7 @@ def main():
                                 'best_acc': best_acc,
                                 'optimizer': optimizer.state_dict(),
                                 'iteration': iteration}, 
-                                is_best, filename=os.path.join(model_path, '0421_new_epoch%s.pth.tar' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_path, 'hidden180-0506_new_epoch%s.pth.tar' % str(epoch+1)), keep_all=False)
 
             print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 

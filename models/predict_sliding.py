@@ -67,6 +67,7 @@ parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
 parser.add_argument('--segment_model', default='unet', type=str)
+parser.add_argument('--hidden_dim', default=128, type=int)
 
 
 def rescale_truncate(image):
@@ -666,11 +667,13 @@ def main():
         #                 pred_step=1,
         #                 model_weight=encoder_weight,
         #                 freeze=True)
+
         
         model = DPC_RNN(sample_size=input_size,
                     device=device,
                     num_seq=args.num_seq, 
-                    seq_len=args.seq_len, 
+                    seq_len=args.seq_len,
+                    hidden_dim=args.hidden_dim,
                     network=network,
                     pred_step=1,
                     model_weight=encoder_weight,
@@ -691,8 +694,14 @@ def main():
             if args.segment_model == 'unet':
                 # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0406-laststate_10band_ts01_epoch25.pth'
                 # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0421-unet_10band_ts01_epoch18.pth'
-                model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_10band_ts01_epoch16.pth'
-
+                if args.hidden_dim == 128:
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_10band_ts01_epoch16.pth'
+                elif args.hidden_dim == 160:
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_10band_ts01_epoch15_hidden_dim160.pth'
+                elif args.hidden_dim == 180:
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_180_10band_ts01_epoch16.pth'
+                elif args.hidden_dim == 200:
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_200_10band_ts01_epoch21.pth'
             elif args.segment_model == 'conv3d':
                 ## segment 3d
                 # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0410-conv3d_10band_ts01_epoch11.pth'
@@ -891,7 +900,8 @@ if __name__ == '__main__':
     # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset PEV_2021
     # python models/predict_sliding.py --gpu 0 --model unet --dataset Tappan01
     # python models/predict_sliding.py --gpu 0 --model convgru --dataset PEV_2021
-    # python models/predict_sliding.py --gpu 0 --model convlstm --dataset PEV_2021
-    # python models/predict_sliding.py --gpu 0 --model 3d-unet --dataset Tappan01 --img_dim 16 --ts_length 16
+    # python models/predict_sliding.py --gpu 0 --model convlstm --dataset PEV_2021 --hidden_dim 200
+    # python models/predict_sliding.py --gpu 0 --model 3d-unet --dataset Tappan01 --img_dim 16 --ts_length 16 --hidden_dim 160
+    # python models/predict_sliding.py --gpu 0 --model 3d-unet --dataset PEV_2021 --img_dim 16 --ts_length 16 --hidden_dim 160
     # python models/predict_sliding.py --gpu 0 --model decision-tree --dataset Tappan01
-    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset Tappan01 --segment_model conv2d
+    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset PEV_2021 --segment_model conv2d

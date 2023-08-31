@@ -58,7 +58,7 @@ def rescale_truncate(image):
     if np.amax(image) > 1:
         image = np.where(image > 1,1,image) 
 
-    map_img =  np.zeros((32,32,3))
+    map_img =  np.zeros(image.shape)
     for band in range(3):
         p2, p98 = np.percentile(image[:,:,band], (2, 98))
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))

@@ -107,7 +107,7 @@ def stride_over_channels(x):
 
 class DPC_RNN(nn.Module):
     '''DPC with RNN'''
-    def __init__(self, sample_size, device, num_seq=8, seq_len=5, pred_step=3, num_class=2, \
+    def __init__(self, sample_size, device, num_seq=8, seq_len=5, pred_step=3, num_class=2, hidden_dim=160,
         network='resnet50', model_weight='', freeze=False, dropout=0.5, segment=True, segment_model='conv3d'):
 
         super(DPC_RNN, self).__init__()
@@ -130,7 +130,7 @@ class DPC_RNN(nn.Module):
         self.param['num_layers'] = 1 # param for GRU
         self.param['hidden_size'] = 0
 
-        hidden_dim = 128
+        hidden_dim = hidden_dim
 
         print('Initializing backbone')
         
