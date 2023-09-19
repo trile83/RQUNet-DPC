@@ -9,11 +9,11 @@ import re
 # and the second one your red raster
 # resamp_dir = '/home/geoint/tri/resampled_senegal_hls/mode' # used for inital cut of raster
 
-tile='PEV'
+tile='PEA'
 
 resamp_dir = f'/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}' # directory after trimming no-data border of cut raster
-hls_dir = '/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015'
-hls_cloud_dir = '/home/geoint/tri/hls-download'
+hls_dir = '/home/geoint/PycharmProjects/tensorflow/out_hls_etz2015'
+hls_cloud_dir = '/home/geoint/tri/hls_etz_16-18_cloud'
 
 resamp_lst = sorted(glob.glob(resamp_dir+'/*.tif'))
 hls_lst = sorted(glob.glob(hls_dir+'/*.tif'))
@@ -22,32 +22,24 @@ hls_cloud_lst = sorted(glob.glob(hls_cloud_dir+'/*Fmask.tif'))
 # print(resamp_lst)
 # print(hls_lst)
 
-cloud = False
-if cloud:
-    hls_lst = hls_cloud_lst
-else:
-    hls_lst = hls_lst
-
 for resamp_fl in resamp_lst:
     year_resamp = re.search(r'WV(.*?).tif', resamp_fl).group(1)[3:7]
     print("Year WV resamp: ", year_resamp)
     for hls_fl in hls_lst:
 
-        if cloud:
-                name_hls = re.search(r'/hls-download/(.*?).v2.0.Fmask.tif', hls_fl).group(1)
-        else:
-            name_hls = re.search(r'/out_hls_cas2015/(.*?).v2.0.tif', hls_fl).group(1)
+        name_hls = re.search(r'/out_hls_etz2015/(.*?).v2.0.tif', hls_fl).group(1)
 
-            year_hls = re.search(r'V.(.*?)T', hls_fl).group(1)[:4]
-            print("Year HLS: ", year_hls)
+        year_hls = re.search(f'{tile[-1]}.(.*?)T', hls_fl).group(1)[:4]
+        print("Year HLS: ", year_hls)
 
-        cloud_fl = f'/home/geoint/tri/hls-download/{name_hls}.v2.0.Fmask.tif'
+        cloud_fl = f'/home/geoint/tri/hls_etz_16-18_cloud/{name_hls}.v2.0.Fmask.tif'
 
         if tile not in hls_fl:
             continue
 
         # hls_fl = '/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015/HLS.S30.T28PFV.2017325T112351.v2.0.tif'
 
+        ## match year of WV and year of HLS data
         if year_resamp == year_hls:
 
             with rasterio.open(resamp_fl) as src, \
@@ -61,6 +53,10 @@ for resamp_fl in resamp_lst:
                     name_resamp = re.search(r'/resampled_senegal_hls/trimmed/PEV/(.*?).tif', resamp_fl).group(1)
                 elif tile == 'PFV':
                     name_resamp = re.search(r'/resampled_senegal_hls/trimmed/PFV/(.*?).tif', resamp_fl).group(1)
+                elif tile == 'PEA':
+                    name_resamp = re.search(r'/resampled_senegal_hls/trimmed/PEA/(.*?).tif', resamp_fl).group(1)
+                elif tile == 'PFA':
+                    name_resamp = re.search(r'/resampled_senegal_hls/trimmed/PFA/(.*?).tif', resamp_fl).group(1)
 
 
                 # Read the first band of the "mask" raster
@@ -95,6 +91,7 @@ for resamp_fl in resamp_lst:
 
                 print(out_img.shape)
 
+                ## check if cloud is less than 3000 pixels
                 temp_arr = cloud_mask % 16
                 count_cloud = np.count_nonzero(temp_arr)
 
@@ -102,11 +99,11 @@ for resamp_fl in resamp_lst:
 
                     # save the result
                     # (don't forget to set the appropriate metadata)
-                    if cloud:
-                        out_fl_name = f'/home/geoint/tri/match-hls-sen/output-{tile}-cloud/{name_hls}-{name_resamp}-cloud.tif'
-                    else:
-                        # out_fl_name = f'/home/geoint/tri/match-hls-sen/output-PEV/{name_hls}-{name_resamp}.tif'
-                        out_fl_name = f'/home/geoint/tri/match-hls-sen/output-{tile}/{name_hls}-{name_resamp}.tif'
+                    # if cloud:
+                    #     out_fl_name = f'/home/geoint/tri/match-hls-sen/output-{tile}-cloud/{name_hls}-{name_resamp}-cloud.tif'
+                    # else:
+                    #     # out_fl_name = f'/home/geoint/tri/match-hls-sen/output-PEV/{name_hls}-{name_resamp}.tif'
+                    out_fl_name = f'/home/geoint/tri/match-hls-sen/output-{tile}/{name_hls}-{name_resamp}.tif'
 
                     with rasterio.open(
                         out_fl_name,

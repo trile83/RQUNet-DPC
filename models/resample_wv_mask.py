@@ -7,20 +7,20 @@ import numpy as np
 
 if __name__ == '__main__':
 
-    file_dir = '/home/geoint/tri/allcasmasks_new/'
+    file_dir = '/home/geoint/tri/alleetz_masks/'
 
     fl_lst = sorted(glob.glob(file_dir+'/*.tif'))
 
     # resample the senegal mask
     for file in fl_lst:
-        name = re.search(r'/allcasmasks_new/(.*?)_mask.tif', file).group(1)
+        name = re.search(r'/alleetz_masks/(.*?)_mask.tif', file).group(1)
         # print(name)
         ds = gdal.Open(file)
         proj = ds.GetProjection()
     
         input = file
-        # output = f"/home/geoint/tri/resampled_senegal_hls/mode/{name}_hls_mask.tif"
-        output = f"/home/geoint/tri/resampled_senegal_hls/mode/{name}_hls_mask.tif"
+        # output = f"/home/geoint/tri/resampled_senegal_hls/mode/eCAS/{name}_hls_mask.tif"
+        output = f"/home/geoint/tri/resampled_senegal_hls/mode/ETZ/{name}_hls_mask.tif"
     
         options = gdal.WarpOptions(
             xRes=30,
@@ -37,7 +37,7 @@ if __name__ == '__main__':
         gdal.Warp(output, input, options=options)
 
     # check resample data size
-    mask_fl_lst = sorted(glob.glob("/home/geoint/tri/resampled_senegal_hls/mode/*.tif"))
+    mask_fl_lst = sorted(glob.glob("/home/geoint/tri/resampled_senegal_hls/mode/ETZ/*.tif"))
     for mask_fl in mask_fl_lst:
         mask = np.squeeze(xr.open_rasterio(mask_fl).values)
         print(mask.shape)

@@ -42,7 +42,7 @@ torch.backends.cudnn.benchmark = True
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
 parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
-parser.add_argument('--dataset', default='Tappan01', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--dataset', default='Tappan02_WV03_20160123', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
 parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
@@ -67,7 +67,7 @@ parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
 parser.add_argument('--segment_model', default='unet', type=str)
-parser.add_argument('--hidden_dim', default=128, type=int)
+parser.add_argument('--hidden_dim', default=200, type=int)
 
 
 def rescale_truncate(image):
@@ -303,6 +303,64 @@ def get_accuracy(y_pred, y_true):
     f1_score = report['cropland']['f1-score']
     return accuracy, precision, recall, f1_score, iou
 
+def save_raster(ref_im, prediction, name, out_dir):
+
+    ref_im = ref_im.transpose("y", "x", "band")
+
+    ref_im = ref_im.drop(
+            dim="band",
+            labels=ref_im.coords["band"].values[1:],
+            drop=True
+        )
+    
+    prediction = xr.DataArray(
+                np.expand_dims(prediction, axis=-1),
+                name='dpc',
+                coords=ref_im.coords,
+                dims=ref_im.dims,
+                attrs=ref_im.attrs
+            )
+
+    # prediction = prediction.where(xraster != -9999)
+
+    prediction.attrs['long_name'] = ('dpc')
+    prediction = prediction.transpose("band", "y", "x")
+
+    # Set nodata values on mask
+    nodata = prediction.rio.nodata
+    prediction = prediction.where(ref_im != nodata)
+    prediction.rio.write_nodata(
+        255, encoded=True, inplace=True)
+
+    # TODO: ADD CLOUDMASKING STEP HERE
+    # REMOVE CLOUDS USING THE CURRENT MASK
+
+    # Save COG file to disk
+    prediction.rio.to_raster(
+        f'{out_dir}/{name}-dpc-pred-0902.tiff',
+        BIGTIFF="IF_SAFER",
+        compress='LZW',
+        num_threads='all_cpus',
+        driver='GTiff',
+        dtype='uint8'
+    )
+
+def get_composite(ts_arr):
+
+    # to get time series length closer to 10, take total frames // 10 to obtain steps
+    step = ts_arr.shape[0] // 10
+    # print(step)
+
+    out_lst = []
+
+    # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
+    for i in range(0,ts_arr.shape[0], step):
+        out_lst.append(np.median(ts_arr[i:i+step], axis=0))
+
+    out_array = np.stack(out_lst, axis=0)
+    del ts_arr
+
+    return out_array
 
 def main():
     torch.manual_seed(42)
@@ -320,6 +378,7 @@ def main():
 
     if not hls:
 
+        '''
         if ts_name == 'Tappan14' or ts_name == 'Tappan15':
             filename = "/home/geoint/tri/hls_ts_video/hls_data_1415.hdf5"
         else:
@@ -342,6 +401,25 @@ def main():
                 ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PEV.2020275T112119.v2.0.tif"
                 ref_im = rxr.open_rasterio(ref_im_fl)
 
+        '''
+        
+
+        #### UPDATE 09/01
+        tile='PEV'
+        filename = "/home/geoint/tri/hls_datacube/hls-ecas-PEV-0901.hdf5"
+        with h5py.File(filename, "r") as file:
+            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
+
+            ref_im_fl = f"/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}/{str(ts_name)}.tif"
+            ref_im = rxr.open_rasterio(ref_im_fl)
+
+        if ts_arr.shape[0] > 15:
+            ts_arr = get_composite(ts_arr)
+
+        mask_arr[mask_arr != 2] = 0
+        mask_arr[mask_arr == 2] = 1
+
     else:
         # ts_name = 'PEV_2021'
         if 'PEV' in args.dataset or 'PFV' in args.dataset:
@@ -359,6 +437,8 @@ def main():
 
         ts_arr = np.transpose(ts_arr, (0,3,1,2))
         mask_arr = ts_arr
+
+        ts_arr = get_composite(ts_arr)
 
 
         if 'PFV' in ts_name:
@@ -390,31 +470,6 @@ def main():
         train_ts_set = np.concatenate((ts_arr[:,1:-4,:,:], ts_arr[:,-2:,:,:]), axis=1)
 
     print(train_ts_set.shape)
-    
-    # ignore the no-data edge of cut Tappan Square to HLS
-    if not hls:
-        if ts_name == 'Tappan02' or ts_name == 'Tappan04':
-            train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,1:-2,1:160], ts_arr[:total_ts_len,-2:,1:-2,1:160]), axis=1)
-            mask_arr = mask_arr[1:-2,1:160]
-        elif ts_name == 'Tappan05':
-            train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,1:300,1:-2], ts_arr[:total_ts_len,-2:,1:300,1:-2]), axis=1)
-            mask_arr = np.squeeze(
-                rxr.open_rasterio('/home/geoint/tri/senegal_hls_mask/Tappan05_WV02_20110430.tiff').values
-                )
-            mask_arr = mask_arr[1:300,1:-1]
-            mask_arr[mask_arr==1]=0
-            mask_arr[mask_arr==2]=1
-            mask_arr[mask_arr==3]=0
-            mask_arr[mask_arr==4]=0
-            mask_arr[mask_arr==5]=0
-            mask_arr[mask_arr==7]=0
-            plt.imshow(mask_arr)
-            plt.savefig('/home/geoint/tri/dpc/tappan05.png')
-            plt.close()
-            # print(mask_arr.shape)
-        else:
-            train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,1:-2,1:-2], ts_arr[:total_ts_len,-2:,1:-2,1:-2]), axis=1)
-            mask_arr = mask_arr[1:-2,1:-2]
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -701,7 +756,10 @@ def main():
                 elif args.hidden_dim == 180:
                     model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_180_10band_ts01_epoch16.pth'
                 elif args.hidden_dim == 200:
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_200_10band_ts01_epoch21.pth'
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_200_10band_ts01_epoch21.pth'
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0901-composite-unet_200_10band_ts01_epoch28.pth'
+
+
             elif args.segment_model == 'conv3d':
                 ## segment 3d
                 # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0410-conv3d_10band_ts01_epoch11.pth'
@@ -787,13 +845,16 @@ def main():
     else:
         prediction = np.squeeze(prediction)
 
+
     if not hls:
         accuracy, precision, recall, f1_score, iou = get_accuracy(prediction, mask_arr)
         print(f'accuracy {accuracy} precision {precision} recall {recall} f1_score {f1_score} mIoU {iou}')
 
     print('prediction shape after final process: ', prediction.shape)
 
-    data_dir = '/home/geoint/tri/dpc/models/output/dpc_unetvae_0927/'
+    data_dir = '/home/geoint/tri/dpc/models/output/output-0902/'
+
+    save_raster(ref_im, prediction, ts_name, data_dir)
 
     plt.figure(figsize=(20,20))
     plt.subplot(1,2,1)
@@ -823,48 +884,7 @@ def main():
 
     plt.close()
 
-    #save Tiff file output
-    # Drop image band to allow for a merge of mask
-    ref_im = ref_im.drop(
-        dim="band",
-        labels=ref_im.coords["band"].values[1:],
-        drop=True
-    )
-
-    if hls:
-        prediction = xr.DataArray(
-                    np.expand_dims(prediction, axis=-1),
-                    name='otcb',
-                    coords=ref_im.coords,
-                    dims=ref_im.dims,
-                    attrs=ref_im.attrs
-                )
-
-        # prediction = prediction.where(xraster != -9999)
-
-        prediction.attrs['long_name'] = ('otcb')
-        prediction.attrs['model_name'] = (model_option)
-        prediction = prediction.transpose("band", "y", "x")
-
-        # Set nodata values on mask
-        nodata = prediction.rio.nodata
-        prediction = prediction.where(ref_im != nodata)
-        prediction.rio.write_nodata(
-            255, encoded=True, inplace=True)
-
-        # TODO: ADD CLOUDMASKING STEP HERE
-        # REMOVE CLOUDS USING THE CURRENT MASK
-
-        # Save COG file to disk
-        prediction.rio.to_raster(
-            f'{data_dir}{ts_name}-{model_option}.tiff',
-            BIGTIFF="IF_SAFER",
-            compress='LZW',
-            # num_threads='all_cpus',
-            driver='GTiff',
-            dtype='uint8'
-        )
-
+    del prediction
 
 def predict_dpc(data_loader, dpc_model):
 

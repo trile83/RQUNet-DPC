@@ -32,7 +32,7 @@ torch.backends.cudnn.benchmark = True
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
 parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
-parser.add_argument('--dataset', default='Tappan01', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--dataset', default='Tappan01_WV02_20181217', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
 parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
@@ -367,10 +367,32 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
-def get_train_set(args, list_ts):
+def get_composite(ts_arr):
+
+    # to get time series length closer to 10, take total frames // 10 to obtain steps
+    step = ts_arr.shape[0] // 10
+    # print(step)
+
+    out_lst = []
+
+    # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
+    for i in range(0,ts_arr.shape[0], step):
+        out_lst.append(np.median(ts_arr[i:i+step], axis=0))
+
+    out_array = np.stack(out_lst, axis=0)
+    del ts_arr
+
+    # print(out_array.shape)
+
+    return out_array
+
+def get_train_set(args, list_ts, tile='PEV'):
     
-    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+
+    ### UPDATE 09/01 - new datacube with small TS time series
+    filename = "/home/geoint/tri/hls_datacube/hls-ecas-PEV-0901.hdf5"
 
     train_ts_set = []
     train_mask_set = []
@@ -381,16 +403,28 @@ def get_train_set(args, list_ts):
     for ts_name in list_ts:
     
         print(ts_name)
-        with h5py.File(filename, "r") as file:
-            if ts_name == 'Tappan06' or ts_name == 'Tappan07':
-                ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
+        # with h5py.File(filename, "r") as file:
+        #     if ts_name == 'Tappan06' or ts_name == 'Tappan07':
+        #         ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
 
-                # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
-                # ref_im = rxr.open_rasterio(ref_im_fl)
-            else:
-                ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
+        #         # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
+        #         # ref_im = rxr.open_rasterio(ref_im_fl)
+        #     else:
+        #         ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+        #### UPDATEs 09/01
+        with h5py.File(filename, "r") as file:
+            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
+
+        print("out ts arr shape: ", ts_arr.shape)
+
+        ts_arr = get_composite(ts_arr)
+
+        mask_arr[mask_arr != 2] = 0
+        mask_arr[mask_arr == 2] = 1
 
         input_size = args.img_dim
         total_ts_len = args.ts_length # L
@@ -459,11 +493,12 @@ def main():
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
     ts_name=args.dataset
-    list_ts = ['Tappan01']
+    tile='PEV'
+    list_ts = ['Tappan01_WV02_20181217']
 
     input_size = args.img_dim
 
-    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
+    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts, tile)
 
     im_set = get_seq(train_ts_set, args.seq_len) #(I,L1,SL,C,H,W)
     print(f'window sequence shape: {im_set.shape}')
@@ -645,7 +680,7 @@ def main():
                 plt.title(f"Segmentation Prediction")
                 image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
                 plt.imshow(image)
-                plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-0504-pred.png")
+                plt.savefig(f"/home/geoint/tri/dpc/output/train-{str(epoch)}-{str(idx)}-dpc-unet-0901-pred.png")
                 plt.close()
 
 
@@ -655,7 +690,7 @@ def main():
                                 'state_dict': model.state_dict(),
                                 'min_loss': min_loss,
                                 'optimizer': optimizer.state_dict()}, 
-                                is_best, filename=os.path.join(model_dir, f'dpc-{network}-encoder-0504-{args.segment_model}_{args.hidden_dim}_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
+                                is_best, filename=os.path.join(model_dir, f'dpc-{network}-encoder-0901-composite-{args.segment_model}_{args.hidden_dim}_10band_ts01_epoch%s.pth' % str(epoch+1)), keep_all=False)
 
             train_loss_out.append(train_losses.local_avg)
             val_loss_out.append(val_losses.local_avg)
@@ -670,7 +705,7 @@ def main():
 
         plt.plot(train_loss_out, color ="blue")
         plt.plot(val_loss_out, color = "red")
-        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0506.png")
+        plt.savefig("/home/geoint/tri/dpc_test_out/train_loss_0901.png")
         plt.close()
 
         print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
