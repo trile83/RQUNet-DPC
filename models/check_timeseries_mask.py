@@ -73,7 +73,7 @@ def get_composite(ts_arr):
 
 if __name__ == "__main__":
 
-    tile='PEA'
+    tile='PEV'
     master_dir = "/home/geoint/tri/match-hls-sen/"
     ts_dict, mask_dict = read_data(master_dir, tile)
 
@@ -93,16 +93,19 @@ if __name__ == "__main__":
 
 
     ## Test load h5py file
-    filename= f'{out_dir}/hls-etz-{tile}-0908.hdf5'
+    print("Test load h5py file")
+    filename= f'{out_dir}/hls-ecas-{tile}-0901.hdf5'
 
     with h5py.File(filename, "r") as file:
-        ts_arr = file[f'Tappan19_WV02_20170126_{tile}_ts'][()]
-        mask_arr = file[f'Tappan19_WV02_20170126_{tile}_mask'][()]
+        # ts_arr = file[f'Tappan19_WV02_20170126_{tile}_ts'][()]
+        # mask_arr = file[f'Tappan19_WV02_20170126_{tile}_mask'][()]
 
-    print(ts_arr.shape)
-    print(mask_arr.shape)
+        print(sorted(list(file.keys())))
+
+    # print(ts_arr.shape)
+    # print(mask_arr.shape)
 
 
     ## Create stepping composite for long timeseries
 
-    out_array = get_composite(ts_arr)
+    # out_array = get_composite(ts_arr)
