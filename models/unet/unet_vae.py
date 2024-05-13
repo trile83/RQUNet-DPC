@@ -228,12 +228,20 @@ class UNet_VAE_old(nn.Module):
         self.down_convs = nn.ModuleList(self.down_convs)
         self.up_convs = nn.ModuleList(self.up_convs)
 
-        # doc with 32 x 32 image size
+        # dpc with 64 x 64 image size
+        
+        # the dimension before flatten is 1024 x 16 x 16 for 256x256 image size
+        #self.fc1 = nn.Linear(enc_out_dim * 16 * 16, latent_dim)
+        #self.fc2 = nn.Linear(enc_out_dim * 16 * 16, latent_dim)
+        #self.fc3 = nn.Linear(latent_dim, enc_out_dim * 16 * 16)
+        #self.act = nn.ReLU()
+        
         # the dimension before flatten is 1024 x 4 x 4 for 64x64 image size
         self.fc1 = nn.Linear(enc_out_dim * 4 * 4, latent_dim)
         self.fc2 = nn.Linear(enc_out_dim * 4 * 4, latent_dim)
         self.fc3 = nn.Linear(latent_dim, enc_out_dim * 4 * 4)
         self.act = nn.ReLU()
+
 
         #self.reset_params()
 

@@ -1,4 +1,4 @@
-import disstl.models as models
+#import disstl.models as models
 import re
 import torch
 import torch.optim as optim
@@ -24,14 +24,16 @@ import h5py
 import logging
 import cv2
 import rioxarray as rxr
-from tensorboardX import SummaryWriter
+from datetime import date
+from scipy import ndimage
+from criterions.diceloss import DiceLoss
 
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='resnet18', type=str)
 parser.add_argument('--model', default='convgru', type=str, help='convlstm, convgru')
-parser.add_argument('--dataset', default='Tappan01', type=str, help='Tappan01, Tappan05')
+parser.add_argument('--dataset', default='Tappan01_WV02_20181217', type=str, help='Tappan01, Tappan05')
 parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
@@ -41,7 +43,7 @@ parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=500, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -55,8 +57,13 @@ parser.add_argument('--num_chips', default=100, type=int)
 parser.add_argument('--num_val', default=20, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
 parser.add_argument('--standardization', default='local', type=str)
-parser.add_argument('--normalization', default=0.0001, type=float)
+parser.add_argument('--normalization', default=10000, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
+parser.add_argument('--loss', default='crossentropy', type=str)
+parser.add_argument('--channels', default=10, type=int)
+parser.add_argument('--crop_thresh', default=0.3, type=float, help='binary balance for crop class')
+parser.add_argument('--noncrop_thresh', default=0.5, type=float, help='binary balance for non-crop class')
+
 
 
 def rescale_truncate(image):
@@ -290,10 +297,11 @@ def reverse_seq(window, seq_length):
 
     return all_arr
 
-def chipper(ts_stack, mask, input_size=32):
+def chipper(ts_stack, mask, mask_ori, input_size=32):
     '''
     stack: input time-series stack to be chipped (TxCxHxW)
     mask: ground truth that need to be chipped (HxW)
+    mask: original ground truth with 7 classes that need to be chipped (HxW)
     input_size: desire output size
     ** return: output stack with chipped size
     '''
@@ -305,7 +313,9 @@ def chipper(ts_stack, mask, input_size=32):
     out_ts = np.array([ts_stack[:, :, i:(i+input_size), j:(j+input_size)]])
     out_mask = np.array([mask[i:(i+input_size), j:(j+input_size)]])
 
-    return out_ts, out_mask
+    out_mask_ori = np.array([mask_ori[i:(i+input_size), j:(j+input_size)]])
+
+    return out_ts, out_mask, out_mask_ori
 
 def specific_chipper(ts_stack, mask, h_index, w_index, input_size=32):
     '''
@@ -359,53 +369,206 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
+def get_composite(ts_arr, ts_len=10):
+
+    # to get time series length closer to 10, take total frames // 10 to obtain steps
+    step = ts_arr.shape[0] // ts_len
+
+    out_lst = []
+
+    # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
+    for i in range(0,ts_arr.shape[0], step):
+        out_lst.append(ts_arr[i])
+
+    out_array = np.stack(out_lst, axis=0)
+    del ts_arr
+
+    return out_array
+
+
+def filtering_holes(mask_array):
+
+    crop_array = mask_array.copy()
+    crop_array[crop_array != 2] = 0
+    crop_array[crop_array == 2] = 1
+
+    crop_array_flt = ndimage.binary_fill_holes(
+        crop_array,
+        structure=np.ones((3,3))
+    ).astype(int)
+
+    new_array = crop_array_flt.copy()
+
+    del crop_array_flt
+    del mask_array
+
+    return np.squeeze(new_array)
+
 def get_train_set(args, list_ts):
     
-    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+
+    ### UPDATE 09/01 - new datacube with small TS time series
+    # if tile =='PEV':
+    #     filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
 
     train_ts_set = []
     train_mask_set = []
-
-    temp_ts_set = []
-    temp_mask_set = []
+    val_ts_set = []
+    val_mask_set = []
     
     for ts_name in list_ts:
-    
-        print(ts_name)
-        with h5py.File(filename, "r") as file:
-            if ts_name == 'Tappan06' or ts_name == 'Tappan07':
-                ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
 
-                # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
-                # ref_im = rxr.open_rasterio(ref_im_fl)
-            else:
-                ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
+        ## temporary list to store data from each TS
+        temp_ts_set = []
+        temp_mask_set = []
+    
+        print("Get data from Tappan: ", ts_name)
+
+        ### UPDATE 09/01 - new datacube with small TS time series
+        if int(ts_name[6:8]) in [2,4,5,7,17]:
+            tile ='PFV'
+            filename = "/projects/kwessel4/hls_datacube/hls-ecas-PFV-0901.hdf5"
+        elif int(ts_name[6:8]) < 19:
+            tile ='PEV'
+            filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
+        elif int(ts_name[6:8]) >= 19:
+            tile ='PEA'
+            filename = "/projects/kwessel4/hls_datacube/hls-eetz-PEA-0908.hdf5"
+
+        #### UPDATEs 09/01
+        with h5py.File(filename, "r") as file:
+            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
+
+        print("out ts arr shape: ", ts_arr.shape)
+
+        print("out ts arr max pixel value: ", np.max(ts_arr))
+        print("out ts arr min pixel value: ", np.min(ts_arr))
+
+        if ts_arr.shape[0] > args.ts_length:
+            ts_arr = get_composite(ts_arr, args.ts_length)
+
+        # mask_arr[mask_arr != 2] = 0
+        # mask_arr[mask_arr == 2] = 1
+
+        mask_ori_arr = mask_arr
+
+        mask_arr = filtering_holes(mask_arr)
+
+        print("Finished with filtering holes in mask!")
+
+        print("unique class in mask: ", np.unique(mask_arr, return_counts=True))
 
         input_size = args.img_dim
         total_ts_len = args.ts_length # L
         padding_size = args.pad_size
 
-        ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+        print('original ts array shape: ', ts_arr.shape)
 
-        for i in range(args.num_chips+args.num_val):
-            ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=args.img_dim)
+        nir = np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)
+
+        print('nir band ts array shape: ', nir.shape)
+
+        if args.channels == 10:
+            ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+        elif args.channels == 4:
+            ts_arr = np.concatenate((ts_arr[:args.ts_length,1:4,:,:], np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)), axis=1)
+            
+        ## TEST: 12/11/2023
+        if args.normalization is not None:
+            ts_arr = normalize_image(ts_arr, args.normalization)
+
+        print("out ts arr max pixel value after normalize: ", np.max(ts_arr))
+        print("out ts arr min pixel value after normalize: ", np.min(ts_arr))
+
+        binary_balance = args.crop_thresh
+        include = True
+
+        generated_patches = 0
+
+        while generated_patches < (args.num_chips+args.num_val):
+            ts, mask, mask_ori = chipper(ts_arr[:,:,:,:], mask_arr, mask_ori_arr, input_size=args.img_dim)
+
+            # first condition, tile must have valid classes
+            if (ts.min() < -10 or mask.min() < 0):
+                #print('nodata condition not met: ', generated_patches)
+                continue
+
+            # second condition, mask does not contain nodata (class "7")
+            if np.count_nonzero(mask_ori == 7) > 0:
+                #print('nodata condition not met: ', generated_patches)
+                continue
+                
+            # condition, if include, number of labels must be at least 2
+            if include and np.unique(mask).shape[0] < 2:
+                #print('mask unique values condition not met: ', generated_patches)
+                continue
+
+            # balancing for binary classes, only applies to binary problem
+            if binary_balance != 0 and np.count_nonzero(mask == 1) < \
+                    int(
+                            mask.shape[1] *
+                            mask.shape[2] *
+                            binary_balance
+                    ):
+                #print('binary condition not met: ', generated_patches)
+                continue
+
+            # balancing for binary classes, only applies to binary problem
+            if binary_balance != 0 and np.count_nonzero(mask == 0) < \
+                    int(
+                            mask.shape[1] *
+                            mask.shape[2] *
+                            args.noncrop_thresh
+                    ):
+                #print('binary condition not met for background class: ', generated_patches)
+                continue
+
             ts = np.squeeze(ts)
 
-            if args.rescale == 'per-ts':
-                ts = rescale_image(ts, args.rescale)
-            else:
+            ## TEST: 12/11/2023
+            if args.rescale is not None:
+                ts = rescale_image(ts,args.rescale)
+            if args.standardization is not None or \
+                    args.standardization != 'None':
                 for frame in range(ts.shape[0]):
-                    if args.normalization is not None:
-                        ts[frame] = normalize_image(ts[frame], args.normalization)
+                    ts[frame] = standardize_image(ts[frame],args.standardization)
 
-                    if args.rescale is not None:
-                        ts[frame] = rescale_image(ts[frame],args.rescale)
+            ### Visualization
+            # plt.figure(figsize=(20,20))
+            # plt.subplot(1,2,1)
+            # plt.title("Image")
+            # image = np.transpose(ts[0,1:4,:,:], (1,2,0))
+            # # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+            # image = rescale_truncate(image)
+            # plt.imshow(image)
+            # plt.subplot(1,2,2)
+            # plt.title(f"Segmentation Label w {np.count_nonzero(mask == 1)/(mask.shape[1]*mask.shape[2])}")
+            # image = np.transpose(mask[0,:,:], (0,1))
+            # plt.imshow(image)
+            # plt.savefig(f"/projects/kwessel4/dpc/output/image/training-{str(generated_patches)}-dpc-unet-{ts_name}-plot.png")
+            # plt.close()
 
-                    if args.standardization is not None:
-                        ts[frame] = standardize_image(ts[frame],args.standardization)
+            
+            # Works November 2023
+
+            # if args.rescale == 'per-ts' and args.normalization is None and args.standardization is None:
+            #     ts = rescale_image(ts, args.rescale)
+                
+            # else:
+                
+            #     if args.normalization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = normalize_image(ts[frame], args.normalization)
+
+            #     if args.standardization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            #     if args.rescale is not None:
+            #         ts = rescale_image(ts,args.rescale)
 
             mask = np.squeeze(mask)
 
@@ -414,14 +577,39 @@ def get_train_set(args, list_ts):
             temp_ts_set.append(ts)
             temp_mask_set.append(mask)
 
-    train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_mask_set = np.stack(temp_mask_set, axis=0)
+            generated_patches += 1
+
+        ts_set = np.stack(temp_ts_set, axis=0)
+        mask_set = np.stack(temp_mask_set, axis=0)
+
+        train_ts = ts_set[:-args.num_val]
+        train_mask = mask_set[:-args.num_val]
+
+        val_ts = ts_set[-args.num_val:]
+        val_mask = mask_set[-args.num_val:]
+
+        train_ts_set.append(train_ts)
+        train_mask_set.append(train_mask)
+
+        val_ts_set.append(val_ts)
+        val_mask_set.append(val_mask)
+
+    train_ts_set = np.concatenate(train_ts_set, axis=0)
+    train_mask_set = np.concatenate(train_mask_set, axis=0)
+
+    val_ts_set = np.concatenate(val_ts_set, axis=0)
+    val_mask_set = np.concatenate(val_mask_set, axis=0)
 
     print(f"train ts set shape: {train_ts_set.shape}")
     print(f"train mask set shape: {train_mask_set.shape}")
 
-    return train_ts_set, train_mask_set, args.num_val*len(list_ts)
+    print(f"val ts set shape: {val_ts_set.shape}")
+    print(f"val mask set shape: {val_mask_set.shape}")
 
+    del temp_ts_set
+    del temp_mask_set
+
+    return train_ts_set, train_mask_set, val_ts_set, val_mask_set
 
 
 class EarlyStopper:
@@ -451,12 +639,27 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
 
-    list_ts = ['Tappan01']
-    ts_name=args.dataset
+    #list_ts = ['Tappan18_WV02_20170126']
+    list_ts = ['Tappan18_WV02_20170126',
+                'Tappan01_WV02_20181217',
+                'Tappan19_WV03_20160617',
+                'Tappan17_WV02_20181217',
+                'Tappan02_WV02_20181217',
+                'Tappan15_WV02_20160108',
+                'Tappan16_WV02_20180508',
+                'Tappan07_WV02_20190207']
+
+                
+    #ts_name=args.dataset
+    #tile='PEV'
 
     input_size = args.img_dim
 
-    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
+    # out_data_dir = '/scratch/mle35/dpc/data/'
+    # out_train_file = f'{out_data_dir}train_dpc_data_{len(list_ts)}ts_{args.crop_thresh}binary_{args.channels}band.npy'
+    # out_val_file = f'{out_data_dir}val_dpc_data_{len(list_ts)}ts_{args.crop_thresh}binary_{args.channels}band.npy'
+
+    train_ts_set, train_mask_set, val_ts_set,val_mask_set = get_train_set(args, list_ts)
 
     ### dpc model ###
 
@@ -488,14 +691,15 @@ def main():
         model = model.to(cuda)
 
     global criterion; 
-    criterion_type = "crossentropy"
+    global criterion_type;
+    criterion_type = args.loss
     if criterion_type == "crossentropy":
         # criterion = models.losses.MultiTemporalCrossEntropy()
         criterion = criterion = torch.nn.CrossEntropyLoss()
     elif criterion_type == "focal_tverski":
         criterion = models.losses.FocalTversky()
     elif criterion_type == "dice":
-        criterion = models.losses.MultiTemporalDiceLoss()
+        criterion = DiceLoss(mode='binary')
 
     ### optimizer ###
     # params = model.parameters()
@@ -511,7 +715,7 @@ def main():
     # setup tools
     global de_normalize; de_normalize = denorm()
     global img_path; img_path, model_path = set_path(args)
-    model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+    model_dir = "/scratch/mle35/dpc/train_checkpoints/"
     
     ### main loop ###
     train_loss_lst = []
@@ -519,8 +723,8 @@ def main():
 
     # print(f"train mask set shape: {train_mask_set.shape}")
 
-    train_seg_set = tsDataset(train_ts_set[:-num_val],  train_mask_set[:-num_val])
-    val_seg_set = tsDataset(train_ts_set[-num_val:],  train_mask_set[-num_val:])
+    train_seg_set = tsDataset(train_ts_set, train_mask_set)
+    val_seg_set = tsDataset(val_ts_set, val_mask_set)
     loader_args_1 = dict(batch_size=args.batch_size, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
     train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
     val_segment_dl = DataLoader(val_seg_set, **loader_args_1)
@@ -553,6 +757,8 @@ def main():
             # output predictions
             index_array = torch.argmax(mask_pred, dim=1)
 
+            today = date.today()
+
             plt.figure(figsize=(20,20))
             plt.subplot(1,3,1)
             plt.title("Image")
@@ -572,7 +778,7 @@ def main():
             plt.title(f"Segmentation Prediction")
             image = np.transpose(index_array[0,:,:].cpu().numpy(), (0,1))
             plt.imshow(image)
-            plt.savefig(f"/home/geoint/tri/dpc/output/best-{epoch}-{model_option}-0421-pred.png")
+            plt.savefig(f"/projects/kwessel4/dpc/output/image/best-{epoch}-{model_option}-{today}-pred.png")
             plt.close()
 
             # save unet segment weights
@@ -583,17 +789,18 @@ def main():
                             'optimizer': segment_optimizer.state_dict()}, 
                             is_best, filename=\
                                 os.path.join(model_dir, \
-                                    f'{model_option}_0504_hidden200_10band_ts01_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                                    f'{model_option}_{today}_10band_{np.round(min_loss,3)}_epoch_{str(epoch+1)}.pth'),
+                                keep_all=False)
             
         # early stopping
         if early_stopper.early_stop(val_loss, min_loss):
             print("Stop at epoch:", epoch+1)
             break
         
-    plt.plot(train_loss_lst, color ="blue")
-    plt.plot(val_loss_lst, color = "red")
-    plt.savefig(f"/home/geoint/tri/dpc_test_out/{model_option}_train_loss_0504.png")
-    plt.close()
+    # plt.plot(train_loss_lst, color ="blue")
+    # plt.plot(val_loss_lst, color = "red")
+    # plt.savefig(f"/projects/kwessel4/dpc/output/plot/{model_option}_train_loss_{today}.png")
+    # plt.close()
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
@@ -611,7 +818,7 @@ def train(data_loader, segment_model, optimizer):
         (B,L,F,H,W) = input_im.shape
         batch = 1
 
-        input_mask = input_mask.view(batch,H,W)
+        #input_mask = input_mask.view(batch,H,W)
 
         # print(f"features shape: {features.shape}")
         # print(f"mask shape: {input_mask.shape}")
@@ -619,6 +826,23 @@ def train(data_loader, segment_model, optimizer):
         mask_pred = segment_model(input_im)
 
         # print(f"mask pred shape: {mask_pred.shape}")
+        if criterion_type == 'BCE':
+            input_mask = torch.nn.functional.one_hot(input_mask, num_classes=2)
+            input_mask = input_mask.squeeze(0)
+            input_mask = torch.permute(input_mask, (0,3,1,2))
+        elif criterion_type == 'dice':
+            input_mask = torch.nn.functional.one_hot(input_mask, num_classes=2)
+            #print('input mask shape after onehot: ',input_mask.shape)
+            # input_mask = input_mask.squeeze(0)
+            # print('input mask shape after squeeze: ',input_mask.shape)
+            input_mask = torch.permute(input_mask, (0,3,1,2))
+        else:
+            input_mask = input_mask.view(batch, H, W)
+
+        if criterion_type == 'dice' or criterion_type == 'BCE':
+            input_mask = input_mask.to(cuda, dtype=torch.float32)
+        else:
+            input_mask = input_mask.to(cuda, dtype=torch.long)
 
         loss = criterion(mask_pred, input_mask)
 
@@ -644,7 +868,7 @@ def val(data_loader, segment_model, epoch):
             (B,L,F,H,W) = input_im.shape
             batch = 1
 
-            input_mask = input_mask.view(batch,H,W)
+            #input_mask = input_mask.view(batch,H,W)
 
             # print(f"features shape: {features.shape}")
             # print(f"mask shape: {input_mask.shape}")
@@ -652,6 +876,23 @@ def val(data_loader, segment_model, epoch):
             mask_pred = segment_model(input_im)
 
             # print(f"mask pred shape: {mask_pred.shape}")
+
+            if criterion_type == 'BCE':
+                input_mask = torch.nn.functional.one_hot(input_mask, num_classes=2)
+                input_mask = input_mask.squeeze(0)
+                input_mask = torch.permute(input_mask, (0,3,1,2))
+            elif criterion_type == 'dice':
+                input_mask = torch.nn.functional.one_hot(input_mask, num_classes=2)
+                #input_mask = input_mask.squeeze(0)
+                input_mask = torch.permute(input_mask, (0,3,1,2))
+            else:
+                input_mask = input_mask.view(batch, H, W)
+
+
+            if criterion_type == 'dice' or criterion_type == 'BCE':
+                input_mask = input_mask.to(cuda, dtype=torch.float32)
+            else:
+                input_mask = input_mask.to(cuda, dtype=torch.long)
 
             loss = criterion(mask_pred, input_mask)
 

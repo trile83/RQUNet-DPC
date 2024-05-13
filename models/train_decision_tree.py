@@ -1,4 +1,4 @@
-import disstl.models as models
+#import disstl.models as models
 import re
 import torch
 import torch.optim as optim
@@ -25,8 +25,11 @@ import logging
 import cv2
 import rioxarray as rxr
 from sklearn import tree
+from sklearn.ensemble import RandomForestClassifier
+from datetime import date
 import pickle
-from tensorboardX import SummaryWriter
+from scipy import ndimage
+#from tensorboardX import SummaryWriter
 
 torch.backends.cudnn.benchmark = True
 
@@ -53,11 +56,11 @@ parser.add_argument('--train_what', default='all', type=str)
 parser.add_argument('--img_dim', default=64, type=int)
 parser.add_argument('--ts_length', default=10, type=int)
 parser.add_argument('--pad_size', default=0, type=int)
-parser.add_argument('--num_chips', default=100, type=int)
-parser.add_argument('--num_val', default=20, type=int)
+parser.add_argument('--num_chips', default=160, type=int)
+parser.add_argument('--num_val', default=40, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
 parser.add_argument('--standardization', default='local', type=str)
-parser.add_argument('--normalization', default=0.0001, type=float)
+parser.add_argument('--normalization', default=10000, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
 
 
@@ -284,10 +287,50 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
-def get_train_set(args, list_ts):
+def get_composite(ts_arr, ts_len=10):
+
+    # to get time series length closer to 10, take total frames // 10 to obtain steps
+    step = ts_arr.shape[0] // ts_len
+    # print(step)
+
+    out_lst = []
+
+    # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
+    for i in range(0,ts_arr.shape[0], step):
+        out_lst.append(ts_arr[i])
+
+    out_array = np.stack(out_lst, axis=0)
+    del ts_arr
+
+    return out_array
+
+
+def filtering_holes(mask_array):
+
+    crop_array = mask_array.copy()
+    crop_array[crop_array != 2] = 0
+    crop_array[crop_array == 2] = 1
+
+    crop_array_flt = ndimage.binary_fill_holes(
+        crop_array,
+        structure=np.ones((3,3))
+    ).astype(int)
+
+    new_array = crop_array_flt.copy()
+
+    del crop_array_flt
+    del mask_array
+
+    return np.squeeze(new_array)
+
+def get_train_set(args, list_ts, tile='PEV', model_option='convgru'):
     
-    filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+
+    ### UPDATE 09/01 - new datacube with small TS time series
+    if tile =='PEV':
+        filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
 
     train_ts_set = []
     train_mask_set = []
@@ -297,40 +340,137 @@ def get_train_set(args, list_ts):
     
     for ts_name in list_ts:
     
-        print(ts_name)
-        with h5py.File(filename, "r") as file:
-            if ts_name == 'Tappan06' or ts_name == 'Tappan07':
-                ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
+        print("Get data from Tappan: ", ts_name)
+        # with h5py.File(filename, "r") as file:
+        #     if ts_name == 'Tappan06' or ts_name == 'Tappan07':
+        #         ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
 
-                # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
-                # ref_im = rxr.open_rasterio(ref_im_fl)
-            else:
-                ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
+        #         # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
+        #         # ref_im = rxr.open_rasterio(ref_im_fl)
+        #     else:
+        #         ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+        #### UPDATEs 09/01
+        with h5py.File(filename, "r") as file:
+            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
+
+        print("out ts arr shape: ", ts_arr.shape)
+
+        print("out ts arr max pixel value: ", np.max(ts_arr))
+        print("out ts arr min pixel value: ", np.min(ts_arr))
+
+        if ts_arr.shape[0] > args.ts_length:
+            ts_arr = get_composite(ts_arr, args.ts_length)
+
+        mask_arr = filtering_holes(mask_arr)
+
+        print("Finished with filtering holes in mask!")
+        print("unique class in mask: ", np.unique(mask_arr, return_counts=True))
 
         input_size = args.img_dim
         total_ts_len = args.ts_length # L
         padding_size = args.pad_size
 
         ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+            
+        ## TEST: 12/11/2023
+        if args.normalization is not None:
+            ts_arr = normalize_image(ts_arr, args.normalization)
 
-        for i in range(args.num_chips+args.num_val):
+        print("out ts arr max pixel value after normalize: ", np.max(ts_arr))
+        print("out ts arr min pixel value after normalize: ", np.min(ts_arr))
+
+        binary_balance = 0.30
+        include = True
+
+        generated_patches = 0
+
+        while generated_patches < (args.num_chips+args.num_val):
             ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=args.img_dim)
+
+            # first condition, tile must have valid classes
+            if (ts.min() < -1000 or mask.min() < 0):
+                #print('nodata condition not met: ', generated_patches)
+                continue
+                
+            # condition, if include, number of labels must be at least 2
+            if include and np.unique(mask).shape[0] < 2:
+                #print('mask unique values condition not met: ', generated_patches)
+                continue
+
+            # balancing for binary classes, only applies to binary problem
+            if binary_balance != 0 and np.count_nonzero(mask == 1) < \
+                    int(
+                            mask.shape[1] *
+                            mask.shape[2] *
+                            binary_balance
+                    ):
+                #print('binary condition not met: ', generated_patches)
+                continue
+
+            # balancing for binary classes, only applies to binary problem
+            if binary_balance != 0 and np.count_nonzero(mask == 0) < \
+                    int(
+                            mask.shape[1] *
+                            mask.shape[2] *
+                            0.2
+                    ):
+                #print('binary condition not met for background class: ', generated_patches)
+                continue
+
             ts = np.squeeze(ts)
 
-            if args.rescale == 'per-ts':
-                ts = rescale_image(ts, args.rescale)
-            else:
+            ## TEST: 12/11/2023
+            if args.rescale is not None or \
+                    args.rescale != 'None':
+                ts = rescale_image(ts,args.rescale)
+
+                # print("ts max pixel value after rescale whole ts: ", np.max(ts))
+                # print("ts min pixel value after rescale whole ts: ", np.min(ts))
+
+            if args.standardization is not None or \
+                    args.standardization != 'None':
                 for frame in range(ts.shape[0]):
-                    if args.normalization is not None:
-                        ts[frame] = normalize_image(ts[frame], args.normalization)
+                    ts[frame] = standardize_image(ts[frame],args.standardization)
 
-                    if args.rescale is not None:
-                        ts[frame] = rescale_image(ts[frame],args.rescale)
+                # print("ts max pixel value after standardization: ", np.max(ts))
+                # print("ts min pixel value after standardization: ", np.min(ts))
 
-                    if args.standardization is not None:
-                        ts[frame] = standardize_image(ts[frame],args.standardization)
+            # Rescale
+            # if args.rescale is not None and \
+            #         args.rescale != 'None':
+            #     # print("RESCALING")
+            #     means = ts.mean(axis=(0, 1))
+            #     stds = ts.std(axis=(0, 1))
+            #     newMin = means - (2 * stds)
+            #     newMax = means + (2 * stds)
+            #     ts = (ts - newMin) / (newMax - newMin)
+           
+
+
+            ### Visualization
+
+            
+            # Works November 2023
+
+            # if args.rescale == 'per-ts' and args.normalization is None and args.standardization is None:
+            #     ts = rescale_image(ts, args.rescale)
+                
+            # else:
+                
+            #     if args.normalization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = normalize_image(ts[frame], args.normalization)
+
+            #     if args.standardization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            #     if args.rescale is not None:
+            #         ts = rescale_image(ts,args.rescale)
 
             mask = np.squeeze(mask)
 
@@ -338,6 +478,8 @@ def get_train_set(args, list_ts):
 
             temp_ts_set.append(ts)
             temp_mask_set.append(mask)
+
+            generated_patches += 1
 
     train_ts_set = np.stack(temp_ts_set, axis=0)
     train_mask_set = np.stack(temp_mask_set, axis=0)
@@ -357,6 +499,8 @@ def train_decision_tree(train_ts_set, train_ts_mask):
     ts_mean = np.transpose(ts_mean, (0,2,3,1))
     print(ts_mean.shape)
 
+    today = date.today()
+
     X = ts_mean.reshape((ts_mean.shape[0]*ts_mean.shape[1]*ts_mean.shape[2], ts_mean.shape[3]))
     Y = train_ts_mask.reshape((train_ts_mask.shape[0]*train_ts_mask.shape[1]*train_ts_mask.shape[2]))
 
@@ -364,7 +508,7 @@ def train_decision_tree(train_ts_set, train_ts_mask):
     print("Y shape: ", Y.shape)
 
     ## save model
-    filename = '/home/geoint/tri/dpc/models/checkpoints/decisiontree_model_0505.sav'
+    filename = f'/projects/kwessel4/dpc/checkpoints/decisiontree_model_{today}.sav'
     if not os.path.isfile(filename):
         ## decision tree model
         clf = tree.DecisionTreeClassifier(criterion='entropy')
@@ -378,6 +522,43 @@ def train_decision_tree(train_ts_set, train_ts_mask):
     # tree.plot_tree(clf)
 
     return clf
+
+def train_random_forest(train_ts_set, train_ts_mask):
+
+    print(train_ts_set.shape)
+    print(train_ts_mask.shape)
+    ts_mean = train_ts_set.mean(axis=1)
+    ts_mean = np.squeeze(ts_mean)
+    ts_mean = np.transpose(ts_mean, (0,2,3,1))
+
+    print('min ts value: ', np.min(ts_mean))
+    print('max ts value: ', np.max(ts_mean))
+    print('ts mean shape: ',ts_mean.shape)
+
+    X = ts_mean.reshape((ts_mean.shape[0]*ts_mean.shape[1]*ts_mean.shape[2],ts_mean.shape[3]))
+    Y = train_ts_mask.reshape((train_ts_mask.shape[0]*train_ts_mask.shape[1]*train_ts_mask.shape[2]))
+
+    print("X shape: ", X.shape)
+    print("Y shape: ", Y.shape)
+
+    today = date.today()
+
+    ## save model
+    filename = f'/projects/kwessel4/dpc/checkpoints/random-forest-{today}.sav'
+    if not os.path.isfile(filename):
+        ## random forest model
+        rf = RandomForestClassifier(criterion='entropy')
+        rf = rf.fit(X, Y)
+        pickle.dump(rf, open(filename, 'wb'))
+    else:
+        rf = pickle.load(open(filename, 'rb'))
+
+    print(rf.feature_importances_)
+
+    # tree.plot_tree(clf)
+
+    return rf
+
 
 
 class EarlyStopper:
@@ -408,14 +589,14 @@ def main():
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
 
     # list_ts = ['Tappan01','Tappan07']
-    list_ts = ['Tappan01']
+    list_ts = ['Tappan18_WV02_20170126']
     ts_name=args.dataset
 
     input_size = args.img_dim
 
     train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
 
-    model = train_decision_tree(train_ts_set, train_mask_set)
+    model = train_random_forest(train_ts_set, train_mask_set)
 
 
 if __name__ == '__main__':

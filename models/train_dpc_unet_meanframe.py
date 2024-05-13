@@ -280,6 +280,101 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
+def get_train_set(args, list_ts, tile='PEV'):
+    
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+
+    ### UPDATE 09/01 - new datacube with small TS time series
+    filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
+
+    train_ts_set = []
+    train_mask_set = []
+
+    temp_ts_set = []
+    temp_mask_set = []
+    
+    for ts_name in list_ts:
+    
+        print(ts_name)
+        # with h5py.File(filename, "r") as file:
+        #     if ts_name == 'Tappan06' or ts_name == 'Tappan07':
+        #         ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+        #         # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
+        #         # ref_im = rxr.open_rasterio(ref_im_fl)
+        #     else:
+        #         ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+        #### UPDATEs 09/01
+        with h5py.File(filename, "r") as file:
+            ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_PEV_mask'][()]
+
+        print("out ts arr shape: ", ts_arr.shape)
+
+        ts_arr = get_composite(ts_arr)
+
+        mask_arr[mask_arr != 2] = 0
+        mask_arr[mask_arr == 2] = 1
+
+        input_size = args.img_dim
+        total_ts_len = args.ts_length # L
+        padding_size = args.pad_size
+
+        ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+
+        for i in range(args.num_chips+args.num_val):
+            ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=args.img_dim)
+            ts = np.squeeze(ts)
+
+            if args.rescale == 'per-ts':
+                ts = rescale_image(ts, args.rescale)
+            else:
+                for frame in range(ts.shape[0]):
+                    if args.normalization is not None:
+                        ts[frame] = normalize_image(ts[frame], args.normalization)
+
+                    if args.rescale is not None:
+                        ts[frame] = rescale_image(ts[frame],args.rescale)
+
+                    if args.standardization is not None:
+                        ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            mask = np.squeeze(mask)
+
+            # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+
+            temp_ts_set.append(ts)
+            temp_mask_set.append(mask)
+
+    train_ts_set = np.stack(temp_ts_set, axis=0)
+    train_mask_set = np.stack(temp_mask_set, axis=0)
+
+    print(f"train ts set shape: {train_ts_set.shape}")
+    print(f"train mask set shape: {train_mask_set.shape}")
+
+    return train_ts_set, train_mask_set, args.num_val*len(list_ts)
+
+class EarlyStopper:
+    def __init__(self, patience=1, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+
+    def early_stop(self, validation_loss, min_validation_loss):
+        if validation_loss < min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
+
+
 
 def main():
     torch.manual_seed(0)
@@ -290,59 +385,13 @@ def main():
 
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
-    ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as file:
-        # print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan01_PEV_ts'][()]
-        mask_arr = file['Tappan01_mask'][()]
 
-    seq_length = 6
-    num_seq = 4
-    input_size = 256 ## 32,64,128,256
-    total_ts_len = 10 # L
+    list_ts = ['Tappan01_WV02_20181217']
+    ts_name=args.dataset
 
-    num_chips = 2
+    input_size = args.img_dim
 
-    padding_size = 8
-    
-    # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
-    # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
-
-    train_ts_set = []
-    train_mask_set = []
-
-    ### get RGB image
-    # ts_arr = ts_arr[:,1:4,:,:]
-    # ts_arr = ts_arr[:,::-1,:,:]
-
-    ## get different chips in the Tappan Square for multiple time series
-    # iteration = 10 # I
-    # h_list =[10,20,30,40,50,70,80,90,100,110]
-    # w_list =[15,25,35,45,55,75,85,95,105,115]
-
-
-    temp_ts_set = []
-    temp_mask_set = []
-    # for i in range(len(h_list)):
-    #     ts, mask = specific_chipper(ts_arr, mask_arr,h_list[i], w_list[i], input_size=input_size)
-
-    for i in range(num_chips):
-        ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
-        ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-        mask = mask.reshape((mask.shape[1],mask.shape[2]))
-
-        # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
-
-        temp_ts_set.append(ts)
-        temp_mask_set.append(mask)
-
-    train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
-    train_mask_set = np.stack(temp_mask_set, axis=0)
-
-    print(f"train ts set shape: {train_ts_set.shape}")
-    print(f"train mask set shape: {train_mask_set.shape}")
+    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
 
     im_set = get_seq(train_ts_set, seq_length) #(I,L1,SL,C,H,W)
     print(f'window sequence shape: {im_set.shape}')

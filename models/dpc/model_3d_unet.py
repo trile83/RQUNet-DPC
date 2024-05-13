@@ -178,7 +178,7 @@ class DPC_RNN_UNet(nn.Module):
 
                 print('context vector shape: ', context.shape)
 
-                output, _ = self.segment_head(context.mean(dim=0))
+                output, _ = self.segment_head(context.mean(dim=0)) ## using the U-Net as the segmentation head
                 # print('output shape: ', output.shape)
 
                 return output, context

@@ -11,11 +11,25 @@ import torch
 from einops import rearrange
 from torch.utils.data import Dataset, DataLoader
 from skimage import exposure
+import matplotlib.pyplot as plt
+import xarray as xr
 
 
 def window2d(window_func, window_size, **kwargs):
     window = np.matrix(window_func(M=window_size, sym=False, **kwargs))
     return window.T.dot(window)
+
+def rescale_truncate(image):
+    if np.amin(image) < 0:
+        image = np.where(image < 0,0,image)
+    if np.amax(image) > 1:
+        image = np.where(image > 1,1,image) 
+
+    map_img =  np.zeros(image.shape)
+    for band in range(3):
+        p2, p98 = np.percentile(image[:,:,band], (2, 98))
+        map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
+    return map_img
 
 def rescale_image(
             image: np.ndarray,
@@ -103,8 +117,8 @@ def standardize_batch(
     Loca, Global, and Mixed options.
     """
     for item in range(image_batch.shape[0]):
-        image_batch[item, :, :, :] = standardize_image(
-            image_batch[item, :, :, :], standardization_type, mean, std)
+        image_batch[item, :, :, :, :] = standardize_image(
+            image_batch[item, :, :, :, :], standardization_type, mean, std)
     return image_batch
 
 
@@ -399,17 +413,18 @@ def sliding_window_tiler(
             n_classes: int,
             pad_style: str = 'reflect',
             overlap: float = 0.50,
-            constant_value: int = 600,
+            constant_value: int = 1,
             batch_size: int = 1024,
             threshold: float = 0.50,
             standardization: str = None,
             dpc_model=None,
             mean=None,
             std=None,
-            window: str = 'triang',  # 'overlap-tile',
-            normalize: float = 0.0001,
+            window: str = 'triang',  # 'overlap-tile', 'triang'
+            normalize: float = 10000,
             rescale='per-ts',
-            model_option='unet'
+            model_option='unet',
+            channels=10,
         ):
     """
     Sliding window using tiler.
@@ -425,15 +440,17 @@ def sliding_window_tiler(
     # tile_size = model.layers[0].input_shape[0][1]
     # tile_channels = model.layers[0].input_shape[0][-1]
 
-    tile_size = 64
-    tile_channels = 10
+    tile_size = 128
+    tile_channels = channels
     seq_length = 6
     num_seq = 4
     global cuda; cuda = torch.device('cuda')
     # n_classes = out of the output layer, output_shape
+    model_option = str(model_option)
+    print("Model option: ", model_option)
 
     if model_option == 'unet':
-
+        print("unet xraster shape: ", xraster.shape)
         tiler_image = Tiler(
             data_shape=xraster.shape,
             tile_shape=(tile_channels, tile_size, tile_size),
@@ -452,8 +469,33 @@ def sliding_window_tiler(
             mode=pad_style,
             constant_value=constant_value
         )
+
+    elif model_option == 'random-forest':
+
+        tile_size = 64
+
+        tiler_image = Tiler(
+            data_shape=xraster.shape,
+            tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
+            channel_dimension=1,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
+
+        # Define the tiler and merger based on the output size of the prediction
+        tiler_mask = Tiler(
+            data_shape=(1, xraster.shape[2], xraster.shape[3]),
+            tile_shape=(1, tile_size, tile_size),
+            channel_dimension=0,
+            overlap=overlap,
+            mode=pad_style,
+            constant_value=constant_value
+        )
     
-    if model_option == 'decision-tree':
+    elif model_option == 'decision-tree':
+
+        tile_size = 64
 
         tiler_image = Tiler(
             data_shape=xraster.shape,
@@ -473,6 +515,8 @@ def sliding_window_tiler(
             mode=pad_style,
             constant_value=constant_value
         )
+
+    
 
     elif model_option == 'dpc-unet':
 
@@ -518,7 +562,7 @@ def sliding_window_tiler(
 
     elif model_option == '3d-unet':
 
-        tile_size = 16
+        tile_size = 64
 
         tiler_image = Tiler(
             data_shape=xraster.shape,
@@ -539,12 +583,16 @@ def sliding_window_tiler(
             constant_value=constant_value
         )
 
-    else:
+    elif model_option == 'convlstm' or model_option == 'convgru':
+
+        tile_size = 64
 
         tiler_image = Tiler(
             data_shape=xraster.shape,
             tile_shape=(xraster.shape[0], tile_channels, tile_size, tile_size),
+            #tile_shape=(tile_channels, tile_size, tile_size),
             channel_dimension=1,
+            #channel_dimension=1,
             overlap=overlap,
             mode=pad_style,
             constant_value=constant_value
@@ -553,23 +601,20 @@ def sliding_window_tiler(
         # Define the tiler and merger based on the output size of the prediction
         tiler_mask = Tiler(
             data_shape=(n_classes, xraster.shape[2], xraster.shape[3]),
+            #data_shape=(n_classes, xraster.shape[1], xraster.shape[2]),
             tile_shape=(n_classes, tile_size, tile_size),
             channel_dimension=0,
             overlap=overlap,
             mode=pad_style,
             constant_value=constant_value
         )
-
-    # new_shape_image, padding_image = tiler_image.calculate_padding()
-    # new_shape_mask, padding_mask = tiler_mask.calculate_padding()
-    # print(xraster.shape, new_shape_image, new_shape_mask)
-    # tiler_image.recalculate(data_shape=new_shape_image)
-    # tiler_mask.recalculate(data_shape=new_shape_mask)
 
     # merger = Merger(tiler=tiler_mask, window=window, logits=4)
+    
     merger = Merger(
         tiler=tiler_mask, window=window)  # #logits=4,
     #    tile_shape_merge=(tile_size, tile_size))
+    
     # print(merger)
     # print("WEIGHTS SHAPE", merger.weights_sum.shape)
     # print("WINDOW SHAPE", merger.window.shape)
@@ -585,28 +630,14 @@ def sliding_window_tiler(
     if model_option == 'dpc-unet':
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
-            # print("batch shape", batch.shape)
-            # batch = rescale_image(batch)
-
             # Standardize
             
-            if rescale == 'per-ts':
-                # for i in range(batch.shape[1]):
-                #     if normalize is not None:
-                #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+            if rescale is not None or rescale != 'None':
                 batch = rescale_image(batch, rescale)
-            else:
-                for i in range(batch.shape[1]):
-                    batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+                    
+            if standardization is not None or standardization != 'None':
+                batch = standardize_batch(batch, standardization)
 
-                if rescale is not None:
-                    for i in range(batch.shape[1]):
-                        batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
-
-                if standardization is not None:
-                    for i in range(batch.shape[1]):
-                        batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
-            
             # DPC:
             im_set = get_seq(batch, seq_length)
             new_set = get_chunks(im_set, num_seq)
@@ -623,7 +654,7 @@ def sliding_window_tiler(
             del new_set
             
             # batch = np.moveaxis(batch, -1, 1)
-            # print("AFTER PREDICT", batch.shape, batch_id)
+            # print(f"AFTER PREDICT {model_option}", batch.shape, batch_id)
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, output.numpy())
@@ -634,8 +665,8 @@ def sliding_window_tiler(
             # print("batch shape", batch.shape)
             # batch = rescale_image(batch)
 
-            for i in range(batch.shape[1]):
-                batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+            # for i in range(batch.shape[1]):
+            #     batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
 
             if rescale is not None:
                 for i in range(batch.shape[1]):
@@ -653,7 +684,8 @@ def sliding_window_tiler(
             # print(f'final output shape: {output.shape}')
             
             # batch = np.moveaxis(batch, -1, 1)
-            # print("AFTER PREDICT", batch.shape, batch_id)
+            print(f"AFTER PREDICT {model_option}", batch.shape, batch_id)
+
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, output)
@@ -669,32 +701,44 @@ def sliding_window_tiler(
 
             batch = torch.Tensor(batch).to(cuda, dtype=torch.float32)
 
-            x = batch
+            #x = batch
 
             # Predict
-            # batch = model.predict(batch, batch_size=batch_size)
-            batch = model(x)[0]
+            #batch = model.predict(batch, batch_size=batch_size)[0]
+            batch = model(batch)[0]
             # batch = np.moveaxis(batch, -1, 1)
-            print("AFTER PREDICT", batch.shape, batch_id)
+            print(f"AFTER PREDICT {model_option}", batch.shape, batch_id)
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
 
-    elif model_option == 'decision-tree':
+    elif model_option == 'decision-tree' or model_option == 'random-forest':
 
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
-            # print(batch.shape)
+            #print(batch.shape)
+            if rescale is not None or rescale != 'None':
+                batch = rescale_image(batch, rescale)
+                    
+            if standardization is not None or standardization != 'None':
+                batch = standardize_batch(batch, standardization)
+
+            image = batch
+
+            batch = batch.mean(axis=1)
             batch = np.squeeze(batch)
             batch = np.transpose(batch, (0,2,3,1))
-            x = batch.reshape((batch.shape[0]*batch.shape[1]*batch.shape[2], batch.shape[3]))
-            # print(x.shape)
+
+            #print('after mean: ', batch.shape) ## batch x channel x height x width
+            x = batch.reshape((batch.shape[0]*batch.shape[1]*batch.shape[2],batch.shape[3]))
 
             output = model.predict(x)
 
-            # print(output.shape)
+            #print('output shape: ', output.shape)
 
             output = output.reshape((batch.shape[0],1,batch.shape[1],batch.shape[2]))
+            
+            #print('output shape: ', output.shape)
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, output)
@@ -704,22 +748,30 @@ def sliding_window_tiler(
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # Standardize
-            if rescale == 'per-ts':
-                # for i in range(batch.shape[1]):
-                #     if normalize is not None:
-                #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+            ## CODE WORKS on Mar-07-2024
+            # if rescale == 'per-ts':
+            #     # for i in range(batch.shape[1]):
+            #     #     if normalize is not None:
+            #     #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+            #     batch = rescale_image(batch, rescale)
+            # else:
+            #     for i in range(batch.shape[1]):
+            #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+
+            #     if rescale is not None:
+            #         for i in range(batch.shape[1]):
+            #             batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
+
+            #     if standardization is not None:
+            #         for i in range(batch.shape[1]):
+            #             batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
+
+
+            if rescale is not None or rescale != 'None':
                 batch = rescale_image(batch, rescale)
-            else:
-                for i in range(batch.shape[1]):
-                    batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
-
-                if rescale is not None:
-                    for i in range(batch.shape[1]):
-                        batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
-
-                if standardization is not None:
-                    for i in range(batch.shape[1]):
-                        batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
+                    
+            if standardization is not None or standardization != 'None':
+                batch = standardize_batch(batch, standardization)
 
             # print("AFTER STD", batch.shape)
 
@@ -731,33 +783,39 @@ def sliding_window_tiler(
             # batch = model.predict(batch, batch_size=batch_size)
             batch = model(x)
             # batch = np.moveaxis(batch, -1, 1)
-            # print("AFTER PREDICT", batch.shape, batch_id)
+            # print(f"AFTER PREDICT {model_option}", batch.shape, batch_id)
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
 
-    else:
+    elif model_option == 'convgru' or model_option == 'convlstm':
         for batch_id, batch in tiler_image(xraster, batch_size=batch_size):
 
             # Standardize
             # batch = rescale_image(batch)
 
-            if rescale == 'per-ts':
-                # for i in range(batch.shape[1]):
-                #     if normalize is not None:
-                #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+            # if rescale == 'per-ts':
+            #     # for i in range(batch.shape[1]):
+            #     #     if normalize is not None:
+            #     #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+            #     batch = rescale_image(batch, rescale)
+            # else:
+            #     for i in range(batch.shape[1]):
+            #         batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
+
+            #     if rescale is not None:
+            #         for i in range(batch.shape[1]):
+            #             batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
+
+            #     if standardization is not None:
+            #         for i in range(batch.shape[1]):
+            #             batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
+
+            if rescale is not None or rescale != 'None':
                 batch = rescale_image(batch, rescale)
-            else:
-                for i in range(batch.shape[1]):
-                    batch[:,i,:,:,:] = normalize_image(batch[:,i,:,:,:], normalize)
-
-                if rescale is not None:
-                    for i in range(batch.shape[1]):
-                        batch[:,i,:,:,:] = rescale_image(batch[:,i,:,:,:], rescale)
-
-                if standardization is not None:
-                    for i in range(batch.shape[1]):
-                        batch[:,i,:,:,:] = standardize_batch(batch[:,i,:,:,:], standardization)
+                    
+            if standardization is not None or standardization != 'None':
+                batch = standardize_batch(batch, standardization)
 
             # print("AFTER STD", batch.shape)
 
@@ -767,6 +825,7 @@ def sliding_window_tiler(
 
             # Predict
             batch = model(x)
+            # print(f"AFTER PREDICT {model_option}", batch.shape, batch_id)
 
             # Merge the updated data in the array
             merger.add_batch(batch_id, batch_size, batch.detach().cpu().numpy())
@@ -780,7 +839,6 @@ def sliding_window_tiler(
     print('prediction shape: ', prediction.shape)
 
     #### prediction = np.transpose(prediction, (1,2,0))
-
 
     # if prediction.shape[0] > 1:
     #     prediction = np.argmax(prediction, axis=0)

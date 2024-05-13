@@ -1,4 +1,4 @@
-import disstl.models as models
+#import disstl.models as models
 import re
 import torch
 import torch.optim as optim
@@ -21,7 +21,7 @@ import h5py
 import logging
 import cv2
 import rioxarray as rxr
-from tensorboardX import SummaryWriter
+from datetime import date
 
 torch.backends.cudnn.benchmark = True
 
@@ -49,8 +49,8 @@ parser.add_argument('--img_dim', default=64, type=int)
 parser.add_argument('--ts_length', default=10, type=int)
 parser.add_argument('--pad_size', default=0, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
-parser.add_argument('--num_chips', default=40, type=int)
-parser.add_argument('--num_val', default=4, type=int)
+parser.add_argument('--num_chips', default=1000, type=int)
+parser.add_argument('--num_val', default=200, type=int)
 parser.add_argument('--standardization', default='local', type=str)
 parser.add_argument('--normalization', default=0.0001, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
@@ -209,83 +209,6 @@ class segmentDataset(Dataset):
         }
 
 
-def get_seq(sequence, seq_length):
-    '''
-    sequence: long time-series input
-    seq_length: length of window for time-series chunk; default = 5
-    return: array with all time-series chunk; prediction size =1, num_seq = 4
-    '''
-    (I,L,C,H,W) = sequence.shape
-    all_arr = np.zeros((I,L-seq_length+1,seq_length,C,H,W))
-    for j in range(I):
-        for i in range(seq_length, L+1):
-            array = sequence[j,i-seq_length:i,:,:,:] # SL, C, H, W
-            all_arr[j,i-seq_length] = array
-
-        # for i in range(L-seq_length): # same results
-        #     array = sequence[j,i:i+seq_length,:,:,:] # SL, C, H, W
-        #     all_arr[j,i] = array
-
-    return all_arr
-
-def get_chunks(windows, num_seq):
-    '''
-    TODO: match with get_seq function
-    windows: number of windows in 1 time-series
-    number: number of window for time-series chunk; default = 4
-    return: array with all time-series chunk; prediction size =1, num_seq (N) = 4; N x 6 x 5 x 32 x 32
-    '''
-    (I,L1,SL,C,H,W) = windows.shape
-    all_arr = np.zeros((I,L1-num_seq+1,num_seq,SL,C,H,W))
-    for j in range(I):
-        for i in range(num_seq, L1+1):
-            array = windows[j,i-num_seq:i,:,:,:,:] # N, SL, C, H, W
-            if not array.any():
-                print(f"i {i}")
-            all_arr[j,i-num_seq] = array
-
-    return all_arr
-
-def reverse_chunks(chunks, num_seq):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L2,N,SL,C,H,W) = chunks.shape
-    
-    all_arr = np.zeros((I,L2+num_seq-1,SL,C,H,W))
-    for j in range(I):
-        for i in range(L2):
-            if i < L2-1:
-                array = chunks[j,i,0,:,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:,:] = array
-            elif i == L2-1:
-                array = chunks[j,i,:,:,:,:,:]
-                all_arr[j,i:i+num_seq,:,:,:,:] = array
-            del array
-
-    # for j in range(I):
-    #     all_arr[j,L2+num_seq-1,:,:,:,:] = chunks[j,L2-1,-1,:,:,:,:]
-
-    return all_arr
-
-def reverse_seq(window, seq_length):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L1,SL,C,H,W) = window.shape
-    all_arr = np.zeros((I,L1+seq_length-1,C,H,W))
-    for j in range(I):
-        for i in range(L1):
-            if i < L1-1:
-                array = window[j,i,0,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:] = array
-            elif i == L1-1:
-                array = window[j,i,:,:,:,:]
-                all_arr[j,i:i+seq_length,:,:,:] = array
-            del array
-
-    return all_arr
-
 def chipper(ts_stack, mask, input_size=32):
     '''
     stack: input time-series stack to be chipped (TxCxHxW)
@@ -355,6 +278,119 @@ def padding_ts(ts, mask, padding_size=10):
 
     return padded_ts, padded_mask
 
+def get_composite(ts_arr):
+
+    # to get time series length closer to 10, take total frames // 10 to obtain steps
+    step = ts_arr.shape[0] // 10
+    # print(step)
+
+    out_lst = []
+
+    # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
+    for i in range(0,ts_arr.shape[0], step):
+        out_lst.append(np.median(ts_arr[i:i+step], axis=0))
+
+    out_array = np.stack(out_lst, axis=0)
+    del ts_arr
+
+    return out_array
+
+
+def get_train_set(args, list_ts, tile='PEV'):
+    
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+
+    ### UPDATE 09/01 - new datacube with small TS time series
+    filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
+
+    train_ts_set = []
+    train_mask_set = []
+
+    temp_ts_set = []
+    temp_mask_set = []
+    
+    for ts_name in list_ts:
+    
+        print(ts_name)
+        # with h5py.File(filename, "r") as file:
+        #     if ts_name == 'Tappan06' or ts_name == 'Tappan07':
+        #         ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+        #         # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
+        #         # ref_im = rxr.open_rasterio(ref_im_fl)
+        #     else:
+        #         ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
+
+        #### UPDATEs 09/01
+        with h5py.File(filename, "r") as file:
+            ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_PEV_mask'][()]
+
+        print("out ts arr shape: ", ts_arr.shape)
+
+        ts_arr = get_composite(ts_arr)
+
+        mask_arr[mask_arr != 2] = 0
+        mask_arr[mask_arr == 2] = 1
+
+        input_size = args.img_dim
+        total_ts_len = args.ts_length # L
+        padding_size = args.pad_size
+
+        ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+
+        for i in range(args.num_chips+args.num_val):
+            ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=args.img_dim)
+            ts = np.squeeze(ts)
+
+            if args.rescale == 'per-ts':
+                ts = rescale_image(ts, args.rescale)
+            else:
+                for frame in range(ts.shape[0]):
+                    if args.normalization is not None:
+                        ts[frame] = normalize_image(ts[frame], args.normalization)
+
+                    if args.rescale is not None:
+                        ts[frame] = rescale_image(ts[frame],args.rescale)
+
+                    if args.standardization is not None:
+                        ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            mask = np.squeeze(mask)
+
+            # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+
+            temp_ts_set.append(ts)
+            temp_mask_set.append(mask)
+
+    train_ts_set = np.stack(temp_ts_set, axis=0)
+    train_mask_set = np.stack(temp_mask_set, axis=0)
+
+    print(f"train ts set shape: {train_ts_set.shape}")
+    print(f"train mask set shape: {train_mask_set.shape}")
+
+    return train_ts_set, train_mask_set, args.num_val*len(list_ts)
+
+
+class EarlyStopper:
+    def __init__(self, patience=1, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+
+    def early_stop(self, validation_loss, min_validation_loss):
+        if validation_loss < min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
+
 
 def main():
     torch.manual_seed(0)
@@ -365,72 +401,15 @@ def main():
 
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
-    ### hls data
-    # filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
-    with h5py.File(filename, "r") as file:
-        # print("Keys: %s" % file.keys())
-        ts_arr = file['Tappan01_PEV_ts'][()]
-        mask_arr = file['Tappan01_mask'][()]
 
-    input_size = args.img_dim ## 64
-    total_ts_len = args.ts_length # L
+    list_ts = ['Tappan01_WV02_20181217']
+    ts_name=args.dataset
 
-    padding_size = args.pad_size
-    
-    # print(f'data dict tappan01 ts shape: {ts_arr.shape}')
-    # print(f'data dict tappan01 mask shape: {mask_arr.shape}')
+    input_size = args.img_dim
 
-    train_ts_set = []
-    train_mask_set = []
+    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
 
-    ## get different chips in the Tappan Square for multiple time series
-    num_chips = args.num_chips # I
-    num_val = args.num_val
-
-    h_list_train =[10,20]
-    w_list_train =[15,25]
-    h_list =[10,20,30,40,50,70,80,90,100,110,200]
-    w_list =[15,25,35,45,55,75,85,95,105,115,215]
-
-    temp_ts_set = []
-    temp_mask_set = []
-
-    # for i in range(len(h_list_train)):
-    #     ts, mask = specific_chipper(ts_arr[:,1:-2,:,:], mask_arr,h_list[i], w_list[i], input_size=input_size)
-
-    for i in range(num_chips+num_val):
-        ts, mask = chipper(ts_arr[:,1:-2,:,:], mask_arr, input_size=input_size)
-        ts = np.squeeze(ts)
-
-        if args.rescale == 'per-ts':
-            ts = rescale_image(ts, args.rescale)
-        else:
-            for frame in range(ts.shape[0]):
-                if args.normalization is not None:
-                    ts[frame] = normalize_image(ts[frame], args.normalization)
-
-                if args.rescale is not None:
-                    ts[frame] = rescale_image(ts[frame],args.rescale)
-
-                if args.standardization is not None:
-                    ts[frame] = standardize_image(ts[frame],args.standardization)
-
-        mask = np.squeeze(mask)
-
-        # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
-
-        temp_ts_set.append(ts)
-        temp_mask_set.append(mask)
-
-    train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_ts_set = train_ts_set[:,:total_ts_len] # get the first 100 in the time series
-    train_mask_set = np.stack(temp_mask_set, axis=0)
-
-    print(f"train ts set shape: {train_ts_set.shape}")
-    print(f"train mask set shape: {train_mask_set.shape}")
-
-    ### dpc model ###
+    ### U-Net model ###
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -461,41 +440,14 @@ def main():
     segment_optimizer = optim.Adam(unet_segment.parameters(), lr=args.lr, weight_decay=args.wd)
     args.old_lr = None
 
-    ### restart training ###
-    if args.resume:
-        if os.path.isfile(args.resume):
-            args.old_lr = float(re.search('_lr(.+?)_', args.resume).group(1))
-            print("=> loading resumed checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
-            args.start_epoch = checkpoint['epoch']
-            iteration = checkpoint['iteration']
-            best_acc = checkpoint['best_acc']
-            model.load_state_dict(checkpoint['state_dict'])
-            if not args.reset_lr: # if didn't reset lr, load old optimizer
-                segment_optimizer.load_state_dict(checkpoint['optimizer'])
-            else: print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
-            print("=> loaded resumed checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-        else:
-            print("[Warning] no checkpoint found at '{}'".format(args.resume))
-
-    if args.pretrain:
-        if os.path.isfile(args.pretrain):
-            print("=> loading pretrained checkpoint '{}'".format(args.pretrain))
-            checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
-            model = neq_load_customized(model, checkpoint['state_dict'])
-            print("=> loaded pretrained checkpoint '{}' (epoch {})"
-                  .format(args.pretrain, checkpoint['epoch']))
-        else: 
-            print("=> no checkpoint found at '{}'".format(args.pretrain))
-
     ### load data ###
 
     print("Start training process!")
 
     # setup tools
     global de_normalize; de_normalize = denorm()
-    global img_path; img_path, model_path = set_path(args)
-    model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
+    #global img_path; img_path
+    model_dir = "/scratch/mle35/dpc/train_checkpoints/"
     
     ### main loop ###
     train_loss_lst = []
@@ -514,6 +466,8 @@ def main():
 
     best_acc = 0
     min_loss = np.inf
+
+    early_stopper = EarlyStopper(patience=10, min_delta=0.2)
 
     for epoch in range(args.start_epoch, args.epochs):
         train_loss = train_segment(train_segment_dl, unet_segment, segment_optimizer)
@@ -534,17 +488,25 @@ def main():
         if is_best:
             min_loss = val_loss
 
+            today = date.today()
+
             # save unet segment weights
             save_checkpoint({'epoch': epoch+1,
                             'net': args.net,
                             'state_dict': unet_segment.state_dict(),
                             'min_loss': min_loss,
                             'optimizer': segment_optimizer.state_dict()}, 
-                            is_best, filename=os.path.join(model_dir, 'unet_meanframe_ts01_0322_cloud_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+                            is_best, filename=os.path.join(model_dir, f'unet_meanframe_{today}_10band_epoch_%s.pth' % str(epoch+1)), keep_all=False)
+
+        # early stopping
+        if early_stopper.early_stop(val_loss, min_loss):
+            print("Stop at epoch:", epoch+1)
+            break
+
 
     plt.plot(train_loss_lst, color ="blue")
     plt.plot(val_loss_lst, color = "red")
-    plt.savefig("/home/geoint/tri/dpc_test_out/unet_mean_train_loss.png")
+    plt.savefig(f"/projects/kwessel4/dpc/output/plot/unet_meanframe_train_loss_{today}.png")
     plt.close()
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
@@ -628,22 +590,6 @@ def val_segment(data_loader, segment_model, optimizer):
     # return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
     return losses.local_avg
 
-
-def set_path(args):
-    if args.resume: exp_path = os.path.dirname(os.path.dirname(args.resume))
-    else:
-        exp_path = 'log_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
-bs{args.batch_size}_lr{1}_seq{args.num_seq}_pred{args.pred_step}_len{args.seq_len}_ds{args.ds}_\
-train-{args.train_what}{2}'.format(
-                    'r%s' % args.net[6::], \
-                    args.old_lr if args.old_lr is not None else args.lr, \
-                    '_pt=%s' % args.pretrain.replace('/','-') if args.pretrain else '', \
-                    args=args)
-    img_path = os.path.join(exp_path, 'img')
-    model_path = os.path.join(exp_path, 'model')
-    if not os.path.exists(img_path): os.makedirs(img_path)
-    if not os.path.exists(model_path): os.makedirs(model_path)
-    return img_path, model_path
 
 if __name__ == '__main__':
     main()

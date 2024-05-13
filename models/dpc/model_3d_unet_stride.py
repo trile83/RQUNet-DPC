@@ -79,35 +79,59 @@ class SegmentationHead_3D(nn.Sequential):
         )
 
 ## Function to reduce 4D time series to 3D
-def stride_over_channels(x):
+def stride_over_channels(x, type='context'):
+    # (batch-size) x seq-length x channels x height x width (8, 6, 200, 64, 64)
     # Since our timesteps is in our "channels" position, we slowly
     # reduce it down to 1.
     # This is striding over our channels
 
-    c1 = nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1)
-    c2 = nn.Conv3d(in_channels=4, out_channels=1, kernel_size=3, padding=1)
-
     # out1 = c1(x)            # batch-size x 4 x channels x height x width
     # out2 = c2(out1)         # batch-size x 1 x channels x height x width
     # out3 = out2.squeeze(1)  # batch-size x channels x height x width
-
-    x = x.permute(1, 0, 2, 3, 4)
-
     # c1 = nn.Conv3d(in_channels=10, out_channels=5, kernel_size=3, padding=1)
     # c2 = nn.Conv3d(in_channels=5, out_channels=1, kernel_size=3, padding=1)
 
-    out1 = c1(x.cpu().float())      # batch-size x 4 x channels x height x width
-    out2 = c2(out1)                 # batch-size x 1 x channels x height x width
-    out3 = out2.squeeze(1)
+    ### USING LAST STATE TENSOR
+    if type == 'last-state':
+        #c1 = nn.Conv3d(in_channels=16, out_channels=8, kernel_size=3, padding=1)
+        c1 = nn.Conv3d(in_channels=8, out_channels=4, kernel_size=3, padding=1)
+        c2 = nn.Conv3d(in_channels=4, out_channels=1, kernel_size=3, padding=1)
 
-    out = out3
+        x = x.permute(1, 0, 2, 3, 4)
+
+        out1 = c1(x.cpu().float())      # batch-size x 8 x channels x height x width
+        out2 = c2(out1)                 # batch-size x 4 x channels x height x width
+        #out3 = c3(out2)
+        out4 = out2.squeeze(1)
+
+        out = out4
+
+    elif type == 'context':
+
+        print('x shape : ',x.shape)
+
+        ### USING CONTEXT VECTOR TENSOR
+        c1 = nn.Conv3d(in_channels=48, out_channels=24, kernel_size=3, padding=1)
+        c2 = nn.Conv3d(in_channels=24, out_channels=12, kernel_size=3, padding=1)
+        c3 = nn.Conv3d(in_channels=12, out_channels=6, kernel_size=3, padding=1)
+        c4 = nn.Conv3d(in_channels=6, out_channels=1, kernel_size=3, padding=1)
+
+        x = x.unsqueeze(0)
+
+        out1 = c1(x.cpu().float())      # batch-size x 24 x channels x height x width
+        out2 = c2(out1)                 # batch-size x 12 x channels x height x width
+        out3 = c3(out2)                 # batch-size x 6 x channels x height x width
+        out4 = c4(out3) 
+        out5 = out4.squeeze(1)
+        out = out5
+
 
     return out.to(cuda)
 
 
 class DPC_RNN(nn.Module):
     '''DPC with RNN'''
-    def __init__(self, sample_size, device, num_seq=8, seq_len=5, pred_step=3, num_class=2, hidden_dim=160,
+    def __init__(self, sample_size, device, num_seq=8, seq_len=5, pred_step=3, num_class=2, hidden_dim=160, in_channels=10,
         network='resnet50', model_weight='', freeze=False, dropout=0.5, segment=True, segment_model='conv3d'):
 
         super(DPC_RNN, self).__init__()
@@ -134,17 +158,17 @@ class DPC_RNN(nn.Module):
 
         print('Initializing backbone')
         
-        if network == "unet-vae" or network == "rqunet-vae-encoder" or network == "unet":
+        if network == "unet-vae" or network == "rqunet-vae" or network == "unet":
             self.param['feature_size'] = 960
             self.param['num_layers'] = 1 # param for GRU
             self.param['hidden_size'] = self.param['feature_size'] # param for GRU # 1024 for resnet50, 256 for resnet18
 
             if network == "unet-vae":
-                self.backbone = UNet_VAE_old(num_classes=10,segment=False,in_channels=10,depth=5,is_encoder=True)
+                self.backbone = UNet_VAE_old(num_classes=in_channels,segment=False,in_channels=in_channels,depth=5,is_encoder=True)
             elif network == 'unet':
-                self.backbone = UNet_test(num_classes=10, in_channels=10, segment=False,is_encoder=True)
-            elif network == 'rqunet-vae-encoder':
-                self.backbone = UNet_VAE_RQ_scheme1_encoder(num_classes=10,segment=False,in_channels=10,depth=5,is_encoder=True,alpha = 0.1)
+                self.backbone = UNet_test(num_classes=in_channels, in_channels=in_channels, segment=False,is_encoder=True)
+            elif network == 'rqunet-vae':
+                self.backbone = UNet_VAE_RQ_scheme1_encoder(num_classes=in_channels,segment=False,in_channels=in_channels,depth=5,is_encoder=True,alpha = 0.5)
 
             print('Load backbone weights!')
             encoder_dict = self.backbone.state_dict()
@@ -214,8 +238,17 @@ class DPC_RNN(nn.Module):
         self.segment_model = segment_model
 
         if self.segment_model == 'unet':
-            self.segment_head = UNet_test(num_classes=2,segment=True,in_channels=hidden_dim)
+            self.segment_head = UNet_test(num_classes=2,
+                                        segment=True,
+                                        in_channels=hidden_dim
+                                        )
         elif self.segment_model == 'conv3d':
+            ## using cross entropy loss
+            # self.segment_head = SegmentationHead_3D(
+            #     input_dim=hidden_dim, hidden_dim=10, output_dim=2
+            # )
+            
+            ## using dice loss
             self.segment_head = SegmentationHead_3D(
                 input_dim=hidden_dim, hidden_dim=10, output_dim=2
             )
@@ -255,7 +288,7 @@ class DPC_RNN(nn.Module):
         (B, L2, N, SL, C, H, W) = block.shape
         block = rearrange(block, "b l2 n sl c h w -> (b l2) n sl c h w")
         # (B, N, SL, C, H, W) = block.shape
-        if self.network == 'unet-vae' or self.network == "rqunet-vae-encoder" or self.network == 'unet':
+        if self.network == 'unet-vae' or self.network == "rqunet-vae" or self.network == 'unet':
             
             block = rearrange(block, "b n sl c h w -> (b n sl) c h w")
             ### encoder
@@ -285,10 +318,11 @@ class DPC_RNN(nn.Module):
 
             else:
 
-                # print('feature in dpc shape: ', feats.shape)
+                #print('feature in dpc shape: ', feats.shape)
                 context, last_state = self.agg(feats)
                 # print('context vector shape: ', context.shape)
-                # print('last state shape: ', last_state.shape)
+                #print('last state shape: ', last_state.shape)
+                
                 # print('last state squeeze shape: ', last_state.mean(dim=0).shape)
 
                 #### required steps for segmenting the context vector
@@ -311,20 +345,36 @@ class DPC_RNN(nn.Module):
 
                 # output = self.head(last_state) ## conv3d
 
-                #######
+                ####### USING LAST STATE VECTOR, WORKED as of 12/31/2023
                 if self.segment_model == 'unet':
-                    output, _ = self.segment_head(last_state.mean(dim=0))
+                    ## Added stride over channel, 12/31/2023
+                    #print("last state before stride shape: ", last_state.shape)
+                    #last_state = stride_over_channels(last_state,"last-state")
+                    last_state = last_state.mean(dim=0)
+                    #print("last state after stride shape: ", last_state.shape)
+                    output, _ = self.segment_head(last_state)
+
+                    #################
+                    # output, _ = self.segment_head(last_state.mean(dim=0))
                 elif self.segment_model == 'conv3d':
                     last_state = rearrange(last_state, "b t c h w -> b c t h w")
                     output = self.segment_head(last_state)
                     output = rearrange(output, "b c t h w -> b t c h w")
                     output = output.mean(dim=0)
                 elif self.segment_model == 'conv2d':
-                    output = self.segment_head(last_state.mean(dim=0))
+                    ## Added stride over channel, 12/31/2023
+                    #last_state = stride_over_channels(last_state, "last-state")
+                    last_state = last_state.mean(dim=0)
+                    output = self.segment_head(last_state)
+
+                    ########
+                    # output = self.segment_head(last_state.mean(dim=0))
 
                 #######
 
                 ### using context vector
+
+                ## NO USE ANYMORE
 
                 # output = self.classification_layer(context.mean(dim=1)) ## conv2d
                 # output, _ = self.segment_head(context.mean(dim=1))
@@ -335,9 +385,20 @@ class DPC_RNN(nn.Module):
                 # output = rearrange(output, "b c t h w -> b t c h w")
                 # output = output.mean(dim=1)
 
-                #######
+                ####### USING CONTEXT VECTOR
                 # if self.segment_model == 'unet':
-                #     output, _ = self.segment_head(context.mean(dim=1))
+                #     ## Added stride over channel, 12/31/2023
+                #     # print("context vector before stride shape: ", context.shape)
+                #     context_fl = rearrange(context, "b sl c h w -> (b sl) c h w")
+                #     # print("context vector after rearrange before stride shape: ", context_fl.shape)
+                #     del context
+                #     context = stride_over_channels(context_fl,"context")
+                #     del context_fl
+                #     # print("context vector after stride shape: ", context.shape)
+                #     output, _ = self.segment_head(context)
+
+                #     #########
+                #     # output, _ = self.segment_head(context.mean(dim=1))
                 # elif self.segment_model == 'conv3d':
                 #     context = rearrange(context, "b t c h w -> b c t h w")
                 #     output = self.segment_head(context)
@@ -351,19 +412,6 @@ class DPC_RNN(nn.Module):
                 # print('output shape: ', output.shape)
 
                 ##################
-                # # print('feature in dpc shape: ', feats.shape)
-                # context, _ = self.agg(feats)
-                # # context = context[:,-1,:].unsqueeze(1) # works
-
-                # context = context[:,-1,:].unsqueeze(0)
-
-                # # context = stride_over_channels(context)
-                # # # print('context vector shape after striding: ', context.shape)
-
-                # # print('context vector shape: ', context.shape)
-
-                # output, _ = self.segment_head(context.mean(dim=0))
-                # output, _ = self.segment_head(context)
 
                 return output, context
 

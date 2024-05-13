@@ -28,6 +28,7 @@ import rioxarray as rxr
 import glob
 import h5py
 from tqdm import tqdm
+from einops import rearrange
 
 
 parser = argparse.ArgumentParser()
@@ -43,14 +44,23 @@ parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=10, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=150, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--img_dim', default=32, type=int)
+parser.add_argument('--img_dim', default=64, type=int)
+parser.add_argument('--num_chips', default=200, type=int)
+parser.add_argument('--num_val', default=40, type=int)
+parser.add_argument('--hidden_dim', default=200, type=int)
+parser.add_argument('--standardization', default='local', type=str, help='local, global')
+parser.add_argument('--normalization', default=10000, type=int)
+parser.add_argument('--rescale', default='per-ts', type=str)
+parser.add_argument('--ts_length', default=10, type=int)
+parser.add_argument('--channels', default=10, type=int)
+
 
 def rescale_truncate(image):
     if np.amin(image) < 0:
@@ -64,7 +74,11 @@ def rescale_truncate(image):
         map_img[:,:,band] = exposure.rescale_intensity(image[:,:,band], in_range=(p2, p98))
     return map_img
 
-def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
+def rescale_image(
+            image: np.ndarray,
+            rescale_type: str = 'per-image',
+            highest_value: int = 1
+        ):
     """
     Rescale image [0, 1] per-image or per-channel.
     Args:
@@ -74,15 +88,63 @@ def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
         rescaled np.ndarray
     """
     image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
     if rescale_type == 'per-image':
+        image = (image - np.min(image, initial=highest_value, where=mask)) \
+            / (np.max(image, initial=highest_value, where=mask)
+                - np.min(image, initial=highest_value, where=mask))
+    elif rescale_type == 'per-ts':
         image = (image - np.min(image)) / (np.max(image) - np.min(image))
+
     elif rescale_type == 'per-channel':
         for i in range(image.shape[-1]):
             image[:, :, i] = (
-                image[:, :, i] - np.min(image[:, :, i])) / \
-                (np.max(image[:, :, i]) - np.min(image[:, :, i]))
+                image[:, :, i]
+                - np.min(image[:, :, i], initial=highest_value, where=mask)) \
+                / (np.max(image[:, :, i], initial=highest_value, where=mask)
+                    - np.min(
+                        image[:, :, i], initial=highest_value, where=mask))
     else:
         logging.info(f'Skipping based on invalid option: {rescale_type}')
+    return image
+
+def standardize_image(
+    image,
+    standardization_type: str,
+    mean: list = None,
+    std: list = None
+):
+    """
+    Standardize image within parameter, simple scaling of values.
+    Loca, Global, and Mixed options.
+    """
+    image = image.astype(np.float32)
+    mask = np.where(image[0, :, :] >= 0, True, False)
+
+    if standardization_type == 'local':
+        for i in range(image.shape[0]):
+            image[i, :, :] = (
+                image[i, :, :] - np.mean(image[i, :, :], where=mask)) / \
+                (np.std(image[i, :, :], where=mask) + 1e-8)
+    elif standardization_type == 'global':
+        for i in range(image.shape[-1]):
+            image[:, :, i] = (image[:, :, i] - mean[i]) / (std[i] + 1e-8)
+    elif standardization_type == 'mixed':
+        raise NotImplementedError
+    return image
+
+def normalize_image(image: np.ndarray, normalize: float):
+    """
+    Normalize image within parameter, simple scaling of values.
+    Args:
+        image (np.ndarray): array to normalize
+        normalize (float): float value to normalize with
+    Returns:
+        normalized np.ndarray
+    """
+    if normalize:
+        image = image / normalize
     return image
 
 
@@ -130,12 +192,131 @@ class satDataset(Dataset):
         'Generates one sample of data'
         # Select sample
         X = self.data[index]
-        Y = self.mask
+        Y = self.mask[index]
 
         return {
             'x': torch.tensor(X),
-            'mask': torch.LongTensor(Y)
+            'mask': torch.tensor(Y)
         }
+
+def get_composite(ts_arr, ts_len=15):
+
+    # to get time series length closer to 10, take total frames // 10 to obtain steps
+    step = ts_arr.shape[0] // ts_len
+    # print(step)
+
+    out_lst = []
+
+    # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
+    for i in range(0,ts_arr.shape[0], step):
+        out_lst.append(ts_arr[i])
+
+    out_array = np.stack(out_lst, axis=0)
+    del ts_arr
+
+    # print(out_array.shape)
+
+    return out_array
+
+
+def get_train_set(args, list_ts, tile='PEV'):
+    
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+
+    ### UPDATE 09/01 - new datacube with small TS time series
+    if tile =='PEV':
+        filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
+
+    train_ts_set = []
+    train_mask_set = []
+
+    temp_ts_set = []
+    temp_mask_set = []
+    
+    for ts_name in list_ts:
+    
+        print("Get data from Tappan: ", ts_name)
+        #### UPDATEs 09/01
+        with h5py.File(filename, "r") as file:
+            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
+
+        print("out ts arr shape: ", ts_arr.shape)
+
+        print("out ts arr max pixel value: ", np.max(ts_arr))
+        print("out ts arr max pixel value: ", np.min(ts_arr))
+
+        if ts_arr.shape[0] > args.ts_length:
+            ts_arr = get_composite(ts_arr, args.ts_length)
+
+        #mask_arr[mask_arr != 2] = 0
+        #mask_arr[mask_arr == 2] = 1
+
+        input_size = args.img_dim
+        total_ts_len = args.ts_length # L
+
+        #ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+        if args.channels == 10:
+            ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+        elif args.channels == 4:
+            ts_arr = np.concatenate((ts_arr[:args.ts_length,1:4,:,:], np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)), axis=1)  
+
+        print("ts arr shape after composite: ", ts_arr.shape)
+
+        ## TEST: 12/11/2023
+        if args.normalization is not None:
+            ts_arr = normalize_image(ts_arr, args.normalization)
+
+        for i in range(args.num_chips+args.num_val):
+            ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=args.img_dim)
+            ts = np.squeeze(ts)
+
+            ## TEST: 12/11/2023
+            if args.rescale is not None:
+                if args.rescale == 'per-ts':
+                    ts = rescale_image(ts,args.rescale)
+                elif args.rescale == 'per-image':
+                    for frame in range(ts.shape[0]):
+                        ts[frame] = rescale_image(ts[frame], args.rescale)
+            if args.standardization is not None:
+                for frame in range(ts.shape[0]):
+                    ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            
+            # Works November 2023
+
+            # if args.rescale == 'per-ts' and args.normalization is None and args.standardization is None:
+            #     ts = rescale_image(ts, args.rescale)
+                
+            # else:
+                
+            #     if args.normalization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = normalize_image(ts[frame], args.normalization)
+
+            #     if args.standardization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            #     if args.rescale is not None:
+            #         ts = rescale_image(ts,args.rescale)
+
+            mask = np.squeeze(mask)
+
+            # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+
+            temp_ts_set.append(ts)
+            temp_mask_set.append(mask)
+
+    train_ts_set = np.stack(temp_ts_set, axis=0)
+    train_mask_set = np.stack(temp_mask_set, axis=0)
+
+    print(f"train ts set shape: {train_ts_set.shape}")
+    print(f"train mask set shape: {train_mask_set.shape}")
+
+    return train_ts_set, train_mask_set, args.num_val*len(list_ts)
+
 
 
 if __name__ == '__main__':
@@ -147,56 +328,62 @@ if __name__ == '__main__':
     global cuda; cuda = torch.device('cuda')
 
     # prepare data
+    ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    filename = "/home/geoint/tri/hls_ts_video/hls_data.hdf5"
-    with h5py.File(filename, "r") as f:
-        print("Keys: %s" % f.keys())
-        ts_arr = f['Tappan01_PEV_ts'][()]
-        mask_arr = f['Tappan01_mask'][()]
+    ts_name=args.dataset
+    tile='PEV'
+    list_ts = ['Tappan01_WV02_20181217', 'Tappan18_WV02_20170126']
+
+    input_size = args.img_dim
+
+    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts, tile)
 
     seq_length = 5
     num_seq = 4
-    input_size = 64
+    input_size = args.img_dim
 
     # get RGB image
 
     # get 10-band HLS
-    ts_arr = ts_arr[:100,1:-2,:,:]
-    # ts_arr = ts_arr[:100,::-1,:,:]
+    ts_arr = train_ts_set
+    train_ts_arr = ts_arr[:-num_val]
+    test_ts_arr = ts_arr[-num_val:]
 
-    mask_arr = mask_arr[:100]
+    train_ts_arr = rearrange(train_ts_arr, "b t c h w -> (b t) c h w")
+    test_ts_arr = rearrange(test_ts_arr, "b t c h w -> (b t) c h w")
 
-    print(f'data dict tappan01 ts shape: {ts_arr.shape}')
-    print(f'data dict tappan01 mask shape: {mask_arr.shape}')
+    print(f'ts shape: {train_ts_arr.shape}')
+    #print(f'mask shape: {mask_arr.shape}')
 
-    ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
-    for j in range(ts.shape[0]):
-        ts[j] = rescale_image(ts[j])
-    ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
-    mask = mask.reshape((mask.shape[1],mask.shape[2]))
+    #ts, mask = chipper(ts_arr, mask_arr, input_size=input_size)
+    #for j in range(ts.shape[0]):
+        #ts[j] = rescale_image(ts[j])
+    #ts = ts.reshape((ts.shape[1],ts.shape[2],ts.shape[3],ts.shape[4]))
+    #mask = mask.reshape((mask.shape[1],mask.shape[2]))
 
-    test_set = satDataset(ts, mask)
+    train_set = satDataset(train_ts_arr, train_ts_arr)
+    val_set = satDataset(test_ts_arr, test_ts_arr)
 
     # 3. Create data loaders
     loader_args = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
-    train_dl = DataLoader(test_set, **loader_args)
-    val_dl = DataLoader(test_set, **loader_args)
+    train_dl = DataLoader(train_set, **loader_args)
+    val_dl = DataLoader(val_set, **loader_args)
 
-    EPOCHS= 100
+    EPOCHS= args.epochs
     # LR= 5E-3 # 3E-4
-    LR= 1E-3
+    LR= 3E-4
     MOMENTUM= 0.9
     WEIGHT_DECAY= 0
     LOG_INTERVAL= 1 # UNITS: MINIBATCHES
 
-    C = 10
-    NUM_CLASSES = 10 # reconstruction hls
-    dir_checkpoint = '/home/geoint/tri/dpc/models/checkpoints/'
+    C = args.channels
+    NUM_CLASSES = args.channels # reconstruction hls
+    dir_checkpoint = '/scratch/mle35/dpc/train_checkpoints/'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = UNet_VAE_old(num_classes=NUM_CLASSES, segment=False, in_channels=C)
-    # model = UNet_test(num_classes=NUM_CLASSES, segment=False, in_channels=C)
+    #model = UNet_VAE_old(num_classes=NUM_CLASSES, segment=False, in_channels=C)
+    model = UNet_test(num_classes=NUM_CLASSES, segment=False, in_channels=C)
 
     if torch.cuda.is_available():
         model.cuda()
@@ -245,7 +432,7 @@ if __name__ == '__main__':
             print(f'Validation Loss Decreased({min_loss:.6f}--->{epoch_loss:.6f}) \t Saving The Model')
             min_loss = epoch_loss
             # Saving State Dict
-            torch.save(model.state_dict(), dir_checkpoint + f'recon_0217_{C}band_unetvae_hls_64_{epoch}_{min_loss}.pth')
+            torch.save(model.state_dict(), dir_checkpoint + f'recon_0315_{args.channels}band_unet_hls_dim{args.img_dim}_{epoch}_{min_loss}.pth')
 
     # torch.save(model.state_dict(), dir_checkpoint + f'bidirect_seg_BH_R001_conv3d_5band_unetvae_{epoch}_{loss_item}.pth')
 

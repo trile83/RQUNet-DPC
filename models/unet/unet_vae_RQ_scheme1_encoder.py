@@ -597,8 +597,11 @@ class UNet_VAE_RQ_scheme1_encoder(nn.Module):
         # RQ shrinkage calculation
         # size_lst = [256,128,64,32,16]
         # size_lst = [32,16,8,4,2][:self.depth] # image height, width = 32
-        size_lst = [64,32,16,8,4][:self.depth] # image height, width = 64
+        #size_lst = [64,32,16,8,4][:self.depth] # image height, width = 64
+        size_lst = [128,64,32,16,8][:self.depth] # image height, width = 128
+        
         # size_lst = [80,40,20,10,5][:self.depth] # image height, width = 64 with 10 padding
+        
         Scales_quincunx = 2
         # Tri: Create dictionary where first key is the filter_size of tensors, second key is the quincunx scale
         # Step 0 - Riesz-Quincunx filter banks:
@@ -654,9 +657,16 @@ class UNet_VAE_RQ_scheme1_encoder(nn.Module):
         #############################################
 
         # the dimension before flatten is 256 x 8 x 8 = 16384 (depth = 3)
-        self.fc1 = nn.Linear(enc_out_dim * 4 * 4, latent_dim)
-        self.fc2 = nn.Linear(enc_out_dim * 4 * 4, latent_dim)
-        self.fc3 = nn.Linear(latent_dim, enc_out_dim * 4 * 4)
+        ## Image size = 64
+        #self.fc1 = nn.Linear(enc_out_dim * 4 * 4, latent_dim)
+        #self.fc2 = nn.Linear(enc_out_dim * 4 * 4, latent_dim)
+        #self.fc3 = nn.Linear(latent_dim, enc_out_dim * 4 * 4)
+        #self.act = nn.ReLU()
+        
+        ## Image size = 128
+        self.fc1 = nn.Linear(enc_out_dim * int(size_lst[-1]) * int(size_lst[-1]), latent_dim)
+        self.fc2 = nn.Linear(enc_out_dim * int(size_lst[-1]) * int(size_lst[-1]), latent_dim)
+        self.fc3 = nn.Linear(latent_dim, enc_out_dim * int(size_lst[-1]) * int(size_lst[-1]))
         self.act = nn.ReLU()
 
         # # the dimension before flatten is 1024 x 16 x 16 = 262144

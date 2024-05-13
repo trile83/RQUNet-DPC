@@ -207,7 +207,7 @@ class UNet_test(nn.Module):
         self.segment = segment
         self.depth = depth
         self.is_encoder = is_encoder
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear') 
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True) 
 
         self.down_convs = []
         self.up_convs = []
@@ -284,6 +284,7 @@ class UNet_test(nn.Module):
                     # x = module(s, x)
                     x = torch.cat((s, self.upsample(x)), 1)
             return x
+
         else:    
 
             # Step 2 - Decoder:
@@ -291,18 +292,18 @@ class UNet_test(nn.Module):
                 s = s_dict[self.depth-2-i]
                 x = module(s, x)
 
-        #print(self.down_convs)
-        #print(self.up_convs)
+            #print(self.down_convs)
+            #print(self.up_convs)
 
-        # No softmax is used. This means you need to use
-        # nn.CrossEntropyLoss is your training script,
-        # as this module includes a softmax already.
-        # if self.segment:
-        #     x = self.conv_final(x)
-        # else:
-        #     x = F.relu(x)
+            # No softmax is used. This means you need to use
+            # nn.CrossEntropyLoss is your training script,
+            # as this module includes a softmax already.
+            # if self.segment:
+            #     x = self.conv_final(x)
+            # else:
+            #     x = F.relu(x)
 
-        x = self.conv_final(x)
-        x_recon = F.relu(x)
+            x = self.conv_final(x)
+            x_recon = F.relu(x)
 
-        return x, x_recon
+            return x, x_recon

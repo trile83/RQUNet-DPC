@@ -1,4 +1,4 @@
-#import disstl.models as models
+import disstl.models as models
 import re
 import torch
 import time
@@ -18,18 +18,15 @@ from dpc.model_3d_unet_stride import DPC_RNN
 from backbone.resnet_2d3d import neq_load_customized
 from utils.augmentation import *
 from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy
-from tqdm import tqdm
 import argparse
 import h5py
 import logging
-import cv2
-import csv
+import re
 from sklearn.metrics import jaccard_score, balanced_accuracy_score, confusion_matrix, classification_report
 import rioxarray as rxr
-import rasterio
 import xarray as xr
 from inference import inference
-#from tensorboardX import SummaryWriter
+from tensorboardX import SummaryWriter
 from benchmod.convlstm import ConvLSTM_Seg, BConvLSTM_Seg
 from benchmod.convgru import ConvGRU_Seg
 from unet3d.unet3d import UNet3D
@@ -42,7 +39,7 @@ torch.backends.cudnn.benchmark = True
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
 parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
-parser.add_argument('--dataset', default='Tappan23_WV02_20180119', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--dataset', default='PEA', type=str, help='PEV, PFV, PEA')
 parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
@@ -362,124 +359,65 @@ def get_composite(ts_arr):
 
     return out_array
 
-def main():
-    torch.manual_seed(42)
-    np.random.seed(42)
-    global args; args = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
-    global cuda; cuda = torch.device('cuda')
+def prepare_data(args, train_ts_set):
 
-    # prepare data
-    ts_name=args.dataset
-    if 'PEV_large' in args.dataset or 'PFV_large' in args.dataset or 'PEA_large' in args.dataset or 'PFA_large' in args.dataset:
-        hls = True
-    else:
-        hls = False
+    model_option = args.model
 
-    if not hls:
+    if model_option == 'unet':
 
-        '''
-        if ts_name == 'Tappan14' or ts_name == 'Tappan15':
-            filename = "/home/geoint/tri/hls_ts_video/hls_data_1415.hdf5"
-        else:
-            filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
+        if args.rescale == 'per-ts':
+            train_ts_set = rescale_image(train_ts_set, args.rescale)
+        xraster = train_ts_set[:args.ts_length,:,:,:].mean(axis=0)
+        temporary_tif = xr.where(xraster > -1000, xraster, 2000)
 
-        # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
+    elif model_option == 'decision-tree':
+        if args.rescale == 'per-ts':
+            train_ts_set = rescale_image(train_ts_set, args.rescale)
+        xraster = train_ts_set[:args.ts_length,:,:,:].mean(axis=0)
+        temporary_tif = xr.where(xraster > -1000, xraster, 2000)
 
-        with h5py.File(filename, "r") as file:
-            print("Keys: %s" % file.keys())
-            if ts_name == 'Tappan06' or ts_name == 'Tappan07':
-                ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
+    elif model_option == '3d-unet':
 
-                ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
-                ref_im = rxr.open_rasterio(ref_im_fl)
-            else:
-                ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_mask'][()]
+        xraster = train_ts_set[:,:,:,:]
+        xraster = xraster[:args.ts_length,:,:,:]
+        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
+    
+    elif model_option == 'convlstm':
 
-                ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PEV.2020275T112119.v2.0.tif"
-                ref_im = rxr.open_rasterio(ref_im_fl)
+        xraster = train_ts_set
 
-        '''
-        
-
-        #### UPDATE 09/01
-        # tile='PEV'
-        # filename = "/home/geoint/tri/hls_datacube/hls-ecas-PEV-0901.hdf5"
-
-        # tile='PFV'
-        # filename = "/home/geoint/tri/hls_datacube/hls-ecas-PFV-0901.hdf5"
-
-        tile='PEA'
-        filename = "/home/geoint/tri/hls_datacube/hls-eetz-PEA-0908.hdf5"
-        with h5py.File(filename, "r") as file:
-            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
-            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
-
-            ref_im_fl = f"/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}/{str(ts_name)}.tif"
-            ref_im = rxr.open_rasterio(ref_im_fl)
-
-        if ts_arr.shape[0] > 15:
-            ts_arr = get_composite(ts_arr)
-
-        mask_arr[mask_arr != 2] = 0
-        mask_arr[mask_arr == 2] = 1
-
-    else:
-        # ts_name = 'PEV_2021'
-        if 'PEV_large' in args.dataset or 'PFV_large' in args.dataset:
-            filename = "/home/geoint/tri/hls_ts_video/hls_data_all.hdf5"
-            with h5py.File(filename, "r",rdcc_nbytes=1024**2*4000,rdcc_nslots=1e7) as file:
-                print("Keys: %s" % file.keys())
-                ts_arr = file[f'{str(ts_name)}_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_ts'][()]
-        elif 'PEA_large' in args.dataset or 'PFA_large' in args.dataset:
-            filename = "/home/geoint/tri/hls_ts_video/hls_data_etz_large_2019.hdf5"
-            with h5py.File(filename, "r",rdcc_nbytes=1024**2*4000,rdcc_nslots=1e7) as file:
-                print("Keys: %s" % file.keys())
-                ts_arr = file[f'{str(ts_name)}_ts'][()]
-                mask_arr = file[f'{str(ts_name)}_ts'][()]
-
-        ts_arr = np.transpose(ts_arr, (0,3,1,2))
-        mask_arr = ts_arr
-
-        ts_arr = get_composite(ts_arr)
-
-        if 'PFV' in ts_name:
-            ref_im_fl = '/home/geoint/PycharmProjects/tensorflow/out_hls/HLS.S30.T28PFV.2021081T110731.v2.0.tif'
-        elif 'PEV' in ts_name:
-            ref_im_fl = '/home/geoint/PycharmProjects/tensorflow/out_hls/HLS.S30.T28PEV.2022009T112441.v2.0.tif'
-        elif 'PEA' in ts_name:
-            ref_im_fl = '/home/geoint/PycharmProjects/tensorflow/out_hls_etz/2019/HLS.S30.T28PEA.2019200T112119.v2.0.tif'
-        elif 'PFA' in ts_name:
-            ref_im_fl = '/home/geoint/PycharmProjects/tensorflow/out_hls_etz/2019/HLS.S30.T28PFA.2019202T110631.v2.0.tif'
-
-        ref_im = rxr.open_rasterio(ref_im_fl)
-
-        print('reference image shape: ', ref_im.shape)
-
-    input_size = args.img_dim
-    total_ts_len = args.ts_length # L
-
-    padding_size = args.pad_size
-
-    print(f'data dict {ts_name} ts shape: {ts_arr.shape}')
-    print(f'data dict {ts_name} mask shape: {mask_arr.shape}')
+        xraster = xraster[:args.ts_length,:,:,:]
+        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
 
 
-    if ts_arr.shape[0] > 9:
-        # train_ts_set = ts_arr[:total_ts_len,1:-2,:,:]
-        train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
-    else:
-        train_ts_set = np.concatenate((ts_arr[:,1:-4,:,:], ts_arr[:,-2:,:,:]), axis=1)
+    elif model_option == 'convgru':
 
-    print(train_ts_set.shape)
+        xraster = train_ts_set
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        xraster = xraster[:args.ts_length,:,:,:]
+        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
+
+
+    elif model_option == 'dpc-unet':
+
+        xraster = train_ts_set[:,:,:,:]
+
+        xraster = xraster[:args.ts_length,:,:,:]
+        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
+
+        print('temp tif shape: ', temporary_tif.shape)
+
+    return temporary_tif
+
+def get_model(args):
+    '''
+    Args:
+
+    '''
 
     model_option = args.model # 'dpc-unet' and 'unet', convlstm
-
+    input_size = args.img_dim
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     standardization = args.standardization
     normalization = args.normalization
 
@@ -488,9 +426,6 @@ def main():
         unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
 
         ### 10 bands
-        # unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_1train_9band_epoch_155.pth'
-
-        # unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_0322_10band_epoch_93.pth'
 
         unetsegment_checkpoint = f'{str(model_dir)}unet_meanframe_ts01_0322_cloud_10band_epoch_23.pth'
         if torch.cuda.is_available():
@@ -498,31 +433,8 @@ def main():
 
         unet_segment.load_state_dict(torch.load(unetsegment_checkpoint)['state_dict'])
 
-        if args.rescale == 'per-ts':
-            train_ts_set = rescale_image(train_ts_set, args.rescale)
-
-        xraster = train_ts_set[:args.ts_length,:,:,:].mean(axis=0)
-
-        if hls:
-            temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
-        else:
-            temporary_tif = xr.where(xraster > -1000, xraster, 2000)
-
-        # temporary_tif = rescale_image(temporary_tif)
-
-        prediction = inference.sliding_window_tiler(
-            xraster=temporary_tif,
-            model=unet_segment,
-            n_classes=args.num_classes,
-            overlap=0.5,
-            batch_size=32,
-            standardization=standardization,
-            mean=0,
-            std=0,
-            normalize=normalization,
-            rescale=args.rescale,
-            model_option=model_option
-        )
+        model = unet_segment
+        batch_size = 32
 
     elif model_option == 'decision-tree':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
@@ -530,33 +442,8 @@ def main():
 
         clf = pickle.load(open(filename, 'rb'))
 
-        if args.rescale == 'per-ts':
-            train_ts_set = rescale_image(train_ts_set, args.rescale)
-
-        xraster = train_ts_set[:args.ts_length,:,:,:].mean(axis=0)
-
-        print(xraster.shape)
-
-        if hls:
-            temporary_tif = xr.where(xraster > -1000, xraster, 2000) # 2000 is the optimal value for the nodata
-        else:
-            temporary_tif = xr.where(xraster > -1000, xraster, 2000)
-
-        # temporary_tif = rescale_image(temporary_tif)
-
-        prediction = inference.sliding_window_tiler(
-            xraster=temporary_tif,
-            model=clf,
-            n_classes=args.num_classes,
-            overlap=0.5,
-            batch_size=32,
-            standardization=standardization,
-            mean=0,
-            std=0,
-            normalize=normalization,
-            rescale=args.rescale,
-            model_option=model_option
-        )
+        model = clf
+        batch_size = 32
 
 
     elif model_option == '3d-unet':
@@ -569,35 +456,8 @@ def main():
 
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
-        xraster = train_ts_set[:,:,:,:]
-
-        # if hls:
-        #     # 2000 is the optimal value for the nodata
-        #     # xraster = xr.where(xraster[:10,:,:,:] > -9000, xraster[:10,:,:,:], 1000)
-        #     xraster = xraster[:args.ts_length,:,:,:]
-        #     temporary_tif = xr.where(xraster > -9000, xraster, 1000) 
-        # else:
-        #     xraster = xraster[:args.ts_length,:,:,:]
-        #     temporary_tif = xr.where(xraster > -9000, xraster, 1000)
-
-        xraster = xraster[:args.ts_length,:,:,:]
-        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
-
-        # temporary_tif = rescale_image(temporary_tif)
-
-        prediction = inference.sliding_window_tiler(
-            xraster=temporary_tif,
-            model=model,
-            n_classes=args.num_classes,
-            overlap=0.5,
-            batch_size=16,
-            standardization=standardization,
-            mean=0,
-            std=0,
-            normalize=normalization,
-            rescale=args.rescale,
-            model_option=model_option
-        )
+        model = model
+        batch_size = 16
     
     elif model_option == 'convlstm':
         hidden_dim = 200
@@ -611,12 +471,6 @@ def main():
             )
  
         ### 10 bands
-        # model_checkpoint = f'{str(model_dir)}convlstm_10band_epoch_188.pth'
-        #model_checkpoint = f'{str(model_dir)}convlstm_new_10band_epoch_56.pth'
-
-        # model_checkpoint = f'{str(model_dir)}convlstm_0405_10band_epoch_99.pth'
-
-        # model_checkpoint = f'{str(model_dir)}convlstm_0420_10band_epoch_95.pth' # train w ts01 and ts07
 
         if hidden_dim == 160:
             model_checkpoint = f'{str(model_dir)}convlstm_0504_10band_ts01_epoch_85.pth' # w only ts01
@@ -630,34 +484,8 @@ def main():
 
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
-        xraster = train_ts_set
-
-        # if hls:
-        #     # 2000 is the optimal value for the nodata
-        #     xraster = xraster[:args.ts_length,:,:,:]
-        #     temporary_tif = xr.where(xraster > -9000, xraster, 2000)
-        # else:
-        #     xraster = xraster[:args.ts_length,:,:,:]
-        #     temporary_tif = xr.where(xraster > -9000, xraster, 2000)
-
-        xraster = xraster[:args.ts_length,:,:,:]
-        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
-
-        # temporary_tif = rescale_image(temporary_tif)
-
-        prediction = inference.sliding_window_tiler(
-            xraster=temporary_tif,
-            model=model,
-            n_classes=2,
-            overlap=0.5,
-            batch_size=8,
-            standardization=standardization,
-            mean=0,
-            std=0,
-            normalize=normalization,
-            rescale=args.rescale,
-            model_option=model_option
-        )
+        model = model
+        batch_size = 8
 
     elif model_option == 'convgru':
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
@@ -670,15 +498,6 @@ def main():
             )
  
         ### 10 bands
-        # model_checkpoint = f'{str(model_dir)}convgru_10band_epoch_90.pth'
-        # model_checkpoint = f'{str(model_dir)}convgru_new_10band_epoch_66.pth'
-        # model_checkpoint = f'{str(model_dir)}convgru_0320_10band_epoch_36.pth'
-
-        # model_checkpoint = f'{str(model_dir)}convgru_0320_10band_norm_epoch_197.pth'
-
-        # model_checkpoint = f'{str(model_dir)}convgru_0320_10band_norm_epoch_153.pth' # cloud
-
-        # model_checkpoint = f'{str(model_dir)}convgru_0405_10band_epoch_98.pth'
 
         # train with TS01 and TS07
         model_checkpoint = f'{str(model_dir)}convgru_0421_10band_multiple_ts_epoch_92.pth'
@@ -687,29 +506,8 @@ def main():
 
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
-        xraster = train_ts_set
-
-        xraster = xraster[:args.ts_length,:,:,:]
-        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
-
-        # xraster = xraster[:args.ts_length,:,:,:]
-        # temporary_tif = xr.where(xraster > -9000, xraster, 2000)
-
-        # temporary_tif = rescale_image(temporary_tif)
-
-        prediction = inference.sliding_window_tiler(
-            xraster=temporary_tif,
-            model=model,
-            n_classes=2,
-            overlap=0.5,
-            batch_size=8,
-            standardization=standardization,
-            mean=0,
-            std=0,
-            normalize=normalization,
-            rescale=args.rescale,
-            model_option=model_option
-        )
+        model = model
+        batch_size = 8
 
     elif model_option == 'dpc-unet':
 
@@ -718,16 +516,6 @@ def main():
             encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0129_10band_unet_hls_98_2.7315708488893155e-06.pth' # unet
         else:
             encoder_weight = '/home/geoint/tri/dpc/models/checkpoints/recon_0217_10band_unetvae_hls_64_97_2.0649683759061257e-05.pth' # unet-vae
-
-        # model = DPC_RNN_UNet(sample_size=input_size,
-        #                 device=device,
-        #                 num_seq=4, 
-        #                 seq_len=6, 
-        #                 network=network,
-        #                 pred_step=1,
-        #                 model_weight=encoder_weight,
-        #                 freeze=True)
-
         
         model = DPC_RNN(sample_size=input_size,
                     device=device,
@@ -742,18 +530,14 @@ def main():
 
         model_dir = "/home/geoint/tri/dpc/models/checkpoints/"
 
+        model_dir = "/home/geoint/tri/dpc/models/checkpoints/hopper-checkpoints"
+
+
         ### 10 bands
         if network == 'unet':
-            # model_checkpoint = f'{str(model_dir)}dpc-unet_9band_epoch24.pth'
-            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-encoder-0306_10band_ts01_epoch14.pth'
-
-            ## classification layer
-            # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0319_10band_ts01_epoch14.pth'
 
             ## unet segment
             if args.segment_model == 'unet':
-                # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0406-laststate_10band_ts01_epoch25.pth'
-                # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0421-unet_10band_ts01_epoch18.pth'
                 if args.hidden_dim == 128:
                     model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_10band_ts01_epoch16.pth'
                 elif args.hidden_dim == 160:
@@ -762,24 +546,19 @@ def main():
                     model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_180_10band_ts01_epoch16.pth'
                 elif args.hidden_dim == 200:
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_200_10band_ts01_epoch21.pth'
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0901-composite-unet_200_10band_ts01_epoch28.pth'
+                    #model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0901-composite-unet_200_10band_ts01_epoch28.pth'
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-2023-11-10-composite-unet_200_10band_ts01_epoch50.pth'
 
 
             elif args.segment_model == 'conv3d':
                 ## segment 3d
-                # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0410-conv3d_10band_ts01_epoch11.pth'
-                # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0420-conv3d_10band_ts01_epoch10.pth'
 
                 model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0421-conv3d_10band_ts01_epoch5.pth'
 
             elif args.segment_model == 'conv2d':
                 model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-conv2d_10band_ts01_epoch23.pth'
 
-            ## cloud
-            # model_checkpoint = f'{str(model_dir)}dpc-rnn-unet-encoder-0323-cloud-stride_10band_ts01_epoch7.pth'
         else:
-            # model_checkpoint = f'{str(model_dir)}dpc-unet_10band_ts01_epoch7.pth'
-            # model_checkpoint = f'{str(model_dir)}dpc-unet-unet-vae-encoder-0307_10band_ts01_epoch14.pth'
             model_checkpoint = f'{str(model_dir)}dpc-unet-unet-vae-encoder-0317_10band_ts01_epoch18.pth'
 
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
@@ -789,43 +568,36 @@ def main():
         if torch.cuda.is_available():
             model = model.to(cuda)
 
-        ### restart training ###
-        ### load data ###
-
-        print("Start prediction!")
-
         # setup tools
         global de_normalize; de_normalize = denorm()
-        
-        ### main loop ###
-        print("Start segmentation!")
 
-        ## visualize
+        model = model
+        batch_size = 1
 
-        # xraster = rescale_image(train_ts_set[:,:,:,:]) # previously works 02-15
-        xraster = train_ts_set[:,:,:,:]
+    return model, batch_size
 
-        # print('ts xraster min', np.min(xraster))
-        
-        # if hls:
-        #     temporary_tif = xr.where(xraster > -9000, xraster, 2000) # 2000 is the optimal value for the nodata
-        # else:
-        #     temporary_tif = xraster[:args.ts_length]
-        #     temporary_tif = xr.where(temporary_tif > -9000, temporary_tif, 2000)
 
-        xraster = xraster[:args.ts_length,:,:,:]
-        temporary_tif = xr.where(xraster > -9000, xraster, 2000)
+def predict(model, batch_size, xraster, ref_im, args):
+    '''
+    Args:
+        model: model to run prediction (dpc-unet, convlstm, convgru)
+        batch-size: batch size to run sliding, smaller batch size takes less computer memory to run, recommend 1 for dpc-unet
+        xraster: raster for prediction
+        ref_im: reference image for outputing GeoTiff file 
 
-        print('temp tif shape: ', temporary_tif.shape)
+    '''
+    model_option = args.model # 'dpc-unet' and 'unet', convlstm
+    input_size = args.img_dim
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    standardization = args.standardization
+    normalization = args.normalization
 
-        # temporary_tif = rescale_image(temporary_tif)
-
-        prediction = inference.sliding_window_tiler(
-            xraster=temporary_tif,
+    prediction = inference.sliding_window_tiler(
+            xraster=xraster,
             model=model,
-            n_classes=2,
+            n_classes=args.num_classes,
             overlap=0.5,
-            batch_size=1,
+            batch_size=batch_size,
             standardization=standardization,
             mean=0,
             std=0,
@@ -850,67 +622,122 @@ def main():
     else:
         prediction = np.squeeze(prediction)
 
+    return prediction
+
+
+def main():
+    torch.manual_seed(42)
+    np.random.seed(42)
+    global args; args = parser.parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
+    global cuda; cuda = torch.device('cuda')
+
+    # Get model
+    model, batch_size = get_model(args)
+
+    # prepare data
+    ts_name=args.dataset
+    if 'PEV_large' in args.dataset or 'PFV_large' in args.dataset or 'PEA_large' in args.dataset or 'PFA_large' in args.dataset:
+        hls = True
+    else:
+        hls = False
 
     if not hls:
-        accuracy, precision, recall, f1_score, iou = get_accuracy(prediction, mask_arr)
-        print(f'accuracy {accuracy} precision {precision} recall {recall} f1_score {f1_score} mIoU {iou}')
+        
+        #### UPDATE 09/01
+        if args.dataset == 'PEV':
+            tile = "PEV"
+            filename = "/home/geoint/tri/hls_datacube/hls-ecas-PEV-0901.hdf5"
 
-    print('prediction shape after final process: ', prediction.shape)
+        elif args.dataset == 'PFV':
+            tile='PFV'
+            filename = "/home/geoint/tri/hls_datacube/hls-ecas-PFV-0901.hdf5"
 
-    data_dir = '/home/geoint/tri/dpc/models/output/output-0902/'
+        elif args.dataset == 'PEA':
+            tile='PEA'
+            filename = "/home/geoint/tri/hls_datacube/hls-eetz-PEA-0908.hdf5"
 
-    save_raster(ref_im, prediction, ts_name, data_dir)
+        with h5py.File(filename, "r") as file:
 
-    plt.figure(figsize=(20,20))
-    plt.subplot(1,2,1)
-    plt.title("Image")
-    image = np.transpose(train_ts_set[0,:3,:,:], (1,2,0))
-    if hls:
-        image= rescale_image(xr.where(image > -9000, image, 2000))
-    else:
-        image= rescale_image(xr.where(image > -9000, image, 2000))
-    # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
-    plt.imshow(rescale_truncate(image))
-    # # plt.savefig(f"{str(data_dir)}{ts_name}-input.png")
-    # plt.subplot(1,2,2)
-    # plt.title("Segmentation Label")
-    # image = mask_arr
-    # plt.imshow(image)
-    # plt.savefig(f"{str(data_dir)}{ts_name}-label.png", dpi=300, bbox_inches='tight')
+            all_keys = sorted(list(file.keys()))
 
-    plt.subplot(1,2,2)
-    plt.title(f"Segmentation Prediction")
-    image = prediction
-    plt.imshow(image)
-    if model_option == 'dpc-unet':
-        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}-{args.segment_model}.png", dpi=300, bbox_inches='tight')
-    else:
-        plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-0504.png", dpi=300, bbox_inches='tight')
+            for index in range(0, len(all_keys), 2):
+                mask_arr = file[all_keys[index]][()]
+                ts_arr = file[all_keys[index+1]][()]
 
-    plt.close()
+                ts_name = re.search(f'(.*?)_{tile}', all_keys[index]).group(1)
 
-    del prediction
+                ref_im_fl = f"/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}/{str(ts_name)}.tif"
+                ref_im = rxr.open_rasterio(ref_im_fl)
 
-def predict_dpc(data_loader, dpc_model):
+                if ts_arr.shape[0] > 15:
+                    ts_arr = get_composite(ts_arr)
 
-    dpc_model.eval()
-    global iteration
+                mask_arr[mask_arr != 2] = 0
+                mask_arr[mask_arr == 2] = 1
 
-    feature_lst = []
+                total_ts_len = args.ts_length # L
 
-    for idx, input in enumerate(data_loader):
-        tic = time.time()
-        input_seq = input["x"]
+                padding_size = args.pad_size
+                network = args.net
+                model_option = args.model # 'dpc-unet' and 'unet', convlstm
 
-        (B,N,SL,C,H,W) = input_seq.shape
-        input_seq = input_seq.to(cuda, dtype=torch.float32)
-        B = input_seq.size(0)
-        features = dpc_model(input_seq)
-        feature_lst.append(features)
+                print(f'data dict {ts_name} ts shape: {ts_arr.shape}')
+                print(f'data dict {ts_name} mask shape: {mask_arr.shape}')
 
-    feature_arr = torch.cat(feature_lst, dim=0)
+                if ts_arr.shape[0] > 9:
+                    train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
+                else:
+                    train_ts_set = np.concatenate((ts_arr[:,1:-4,:,:], ts_arr[:,-2:,:,:]), axis=1)
 
-    return feature_arr.cpu().detach()
+                print(train_ts_set.shape)
+
+                temp_tif = prepare_data(args, train_ts_set)
+
+                print(f"Start predicting {ts_name}!")
+
+                prediction = predict(model, batch_size, temp_tif, ref_im, args)
+
+                if not hls:
+                    accuracy, precision, recall, f1_score, iou = get_accuracy(prediction, mask_arr)
+                    print(f'accuracy {accuracy} precision {precision} recall {recall} f1_score {f1_score} mIoU {iou}')
+
+                print('prediction shape after final process: ', prediction.shape)
+
+                data_dir = '/home/geoint/tri/dpc/models/output/output-0902/'
+
+                save_raster(ref_im, prediction, ts_name, data_dir)
+
+                plt.figure(figsize=(20,20))
+                plt.subplot(1,2,1)
+                plt.title("Image")
+                image = np.transpose(train_ts_set[0,:3,:,:], (1,2,0))
+                if hls:
+                    image= rescale_image(xr.where(image > -9000, image, 2000))
+                else:
+                    image= rescale_image(xr.where(image > -9000, image, 2000))
+
+                plt.imshow(rescale_truncate(image))
+                # # plt.savefig(f"{str(data_dir)}{ts_name}-input.png")
+                # plt.subplot(1,2,2)
+                # plt.title("Segmentation Label")
+                # image = mask_arr
+                # plt.imshow(image)
+                # plt.savefig(f"{str(data_dir)}{ts_name}-label.png", dpi=300, bbox_inches='tight')
+
+                plt.subplot(1,2,2)
+                plt.title(f"Segmentation Prediction")
+                image = prediction
+                plt.imshow(image)
+                if model_option == 'dpc-unet':
+                    plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-{network}-{args.segment_model}.png", dpi=300, bbox_inches='tight')
+                else:
+                    plt.savefig(f"{str(data_dir)}{ts_name}-{model_option}-0504.png", dpi=300, bbox_inches='tight')
+
+                plt.close()
+
+                del prediction
+                del ref_im
 
 
 if __name__ == '__main__':
