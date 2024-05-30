@@ -10,6 +10,7 @@ import h5py
 from scipy import ndimage
 import matplotlib.pyplot as plt
 import matplotlib.colors as pltc
+import rasterio as rio
 
 def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
     """
@@ -68,62 +69,81 @@ def filtering_holes(mask_array, name):
 
     return np.squeeze(new_array)
 
-def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_senegal_hls/trimmed/'):
+def read_data(
+    master_dir: str='',
+    tile: str='PEA',
+    year: int=2016,
+    ):
 
-    fl_dir = sorted(glob.glob(f"{master_dir}/output-{tile}/*.tif"))
+    fl_dir = sorted(glob.glob(f"{master_dir}/*.tif"))
     print("total file: ", len(fl_dir))
 
     ts_dict = {}
-    mask_dict={}
-    unique_name = []
-
-    mask_dir_path = os.path.join(mask_dir_path, tile)
-
-    mask_lst = sorted(glob.glob(f'{mask_dir_path}/*.tif'))
+    unique_year = []
 
     for idx, file in enumerate(fl_dir):
-        name = re.search(f'{tile}/(.*?).tif', file).group(1)[:22]
+        name = re.search(f'{master_dir}/(.*?).tif', file).group(1)
+
+        if tile not in name:
+            continue
         year_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[:4]
         date_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[4:]
+
+        cloud_fl = name + '.Fmask.tif'
+
+        if 'V' in tile:
+            cloud_dir = "/home/geoint/tri/hls_cas_16-22_cloud"
+        elif 'A' in tile:
+            cloud_dir = "/home/geoint/tri/hls_etz_16-22_cloud"
+        cloud_path = os.path.join(cloud_dir, cloud_fl)
 
         # if name == 'Tappan18_WV03_20160307' or name =='Tappan19_WV02_20180119' or name =='Tappan19_WV02_20180119' or name =='Tappan20_WV02_20130430':
         #     continue
 
-        if name not in unique_name: # check if ts name is seen or not
-            anchor_name = name
+    
+        print('year hls: ', year_hls)
+        print('date hls: ', date_hls)
 
-            unique_name.append(anchor_name)
+        if int(year_hls) == year:
 
-            ts_dict[anchor_name] = {}
-            # mask_dict[anchor_name] = []
+            if year_hls not in unique_year: # check if ts name is seen or not
 
-        if name in file:
+                unique_year.append(year_hls)
 
-            img_data = np.squeeze(rxr.open_rasterio(file, masked=False).values)
+                ts_dict[year_hls] = {}
+
+            try:
+
+                img_data = np.squeeze(rxr.open_rasterio(file, masked=False).values)
+
+                cloud_mask = np.squeeze(rxr.open_rasterio(cloud_path, mask=False).values)
+                temp_arr = cloud_mask % 16
+                count_cloud = np.count_nonzero(temp_arr)
+
+                print('count cloud pixels: ', count_cloud)
+
+                if count_cloud > 1800000:
+                    continue
+
+                # print(img_data.shape)
+            except:
+                print('Image Error!')
+                continue
 
             # ts_dict[name].append(img_data)
-            if int(date_hls) not in ts_dict.keys():
-                ts_dict[name][int(date_hls)] = img_data
+            if int(date_hls) not in ts_dict[year_hls].keys():
+                ts_dict[year_hls][int(date_hls)] = img_data
 
-        for mask_fl in mask_lst:
-            if name in mask_fl:
-                # print(name)
-                mask_data = np.squeeze(rxr.open_rasterio(mask_fl, masked=False).values)
-                if name in ts_dict.keys():
-                    mask_data = filtering_holes(mask_data, name)
-                    mask_dict[name]= mask_data
-
-    output_dict = {}
+    # output_dict = {}
 
     # for key in ts_dict.keys():
-    #     # print(key)
+    #     print(key)
     #     output_dict[key] = np.stack(ts_dict[key], axis=0)
 
     # del ts_dict
 
     # return output_dict, mask_dict
-    return ts_dict, mask_dict
-
+    return ts_dict
 
 def get_composite(ts_dict):
 
@@ -176,6 +196,8 @@ def get_composite(ts_dict):
             out_lst.append(ts_dict[key])
             key_lst.append(key)
 
+    print(len(out_lst))
+
 
     out_array = np.stack(out_lst, axis=0)
     del ts_dict
@@ -186,7 +208,6 @@ def get_composite(ts_dict):
 
 def plot_timeseries(
     train_ts_set,
-    mask_arr,
     name,
     dates,
     tile
@@ -205,17 +226,14 @@ def plot_timeseries(
     colormap = pltc.ListedColormap(colors)
 
     plt.figure(figsize=(20,20))
-    for idx in range(1,height*width):
+    for idx in range(1,height*width-1):
         plt.subplot(height,width,idx)
         if idx < 11:
             plt.title(f'Day {dates[idx-1]}')
             image = np.transpose(train_ts_set[(idx-1),1:4,:,:], (1,2,0))
             image= rescale_image(xr.where(image > -9000, image, -1000))
             plt.imshow(rescale_truncate(image))
-        else:
-            plt.title(f'Label')
-            image = mask_arr
-            plt.imshow(image, cmap = colormap, vmin=0, vmax=len(colors))
+        
         # plt.savefig(f"{str(data_dir)}{ts_name}-input.png")
 
     plt.savefig(f"/home/geoint/tri/match-hls-sen/test-im/{name}-{tile}.png", dpi=300, bbox_inches='tight')
@@ -223,11 +241,17 @@ def plot_timeseries(
 
 if __name__ == "__main__":
 
-    tiles=['PEV','PEA','PFV','PGA']
-    master_dir = "/home/geoint/tri/match-hls-sen/"
+    tiles=['PEA']
+    year = 2016
 
     for tile in tiles:
-        ts_dict, mask_dict = read_data(master_dir, tile)
+        if 'V' in tile:
+            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_etz_2"
+        elif 'A' in tile:
+            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_etz2015"
+
+        # print(master_dir)
+        ts_dict = read_data(master_dir, tile, year)
 
         output_dict = {}
 
@@ -243,37 +267,41 @@ if __name__ == "__main__":
 
             print('total time series length: ', len(date_lst))
 
-            mask_arr = mask_dict[key]
+            # mask_arr = mask_dict[key]
 
             if len(ts_dict[key]) < 10:
                 print(key, ' not enough frames in time series')
                 continue
 
-            plot_timeseries(ts_arr, mask_arr, key, date_lst, tile)
+            plot_timeseries(ts_arr, key, date_lst, tile)
 
         out_dir = '/home/geoint/tri/hls_datacube'
 
-        ########################
-        if not os.path.isfile(f'{out_dir}/hls-{tile}.hdf5'):
+        # ########################
+        if not os.path.isfile(f'{out_dir}/hls-{tile}-{year}-full.hdf5'):
 
-            h = h5py.File(f'{out_dir}/hls-{tile}.hdf5', 'w')
+            h = h5py.File(f'{out_dir}/hls-{tile}-{year}-full.hdf5', 'w')
 
             for k, v in output_dict.items():
-                h.create_dataset(f"{k}_{tile}_ts", data=v, compression="gzip", compression_opts=9)
-                h.create_dataset(f"{k}_{tile}_mask", data=mask_dict[k], compression="gzip", compression_opts=9)
+                h.create_dataset(f"{tile}_{k}_ts", data=v, compression="gzip", compression_opts=9)
+
             print(f'finished the data processing')
+
 
 
     ## Test load h5py file
     out_dir = '/home/geoint/tri/hls_datacube'
     print("Test load h5py file")
-    filename= f'{out_dir}/hls-PGA.hdf5'
+    filename= f'{out_dir}/hls-{tile}-{year}-full.hdf5'
 
     with h5py.File(filename, "r") as file:
-        # ts_arr = file[f'Tappan05_WV02_20181217_PEV_ts'][()]
-        # mask_arr = file[f'Tappan05_WV02_20181217_PEV_mask'][()]
+        ts_arr = file[f'{tile}_{year}_ts'][()]
+
+        print(ts_arr.shape)
 
         print(sorted(list(file.keys())))
+
+        # plot_timeseries(ts_arr, ts_arr[0], 'PEV-large', 'PEV')
 
     # print(ts_arr.shape)
     # print(mask_arr.shape)
