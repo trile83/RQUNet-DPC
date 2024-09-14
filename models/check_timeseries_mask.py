@@ -10,6 +10,7 @@ import h5py
 from scipy import ndimage
 import matplotlib.pyplot as plt
 import matplotlib.colors as pltc
+import logging
 
 def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
     """
@@ -68,7 +69,7 @@ def filtering_holes(mask_array, name):
 
     return np.squeeze(new_array)
 
-def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_senegal_hls/trimmed/'):
+def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_senegal_hls/filtered/'):
 
     fl_dir = sorted(glob.glob(f"{master_dir}/output-{tile}/*.tif"))
     print("total file: ", len(fl_dir))
@@ -77,7 +78,7 @@ def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_
     mask_dict={}
     unique_name = []
 
-    mask_dir_path = os.path.join(mask_dir_path, tile)
+    # mask_dir_path = os.path.join(mask_dir_path, tile)
 
     mask_lst = sorted(glob.glob(f'{mask_dir_path}/*.tif'))
 
@@ -106,11 +107,12 @@ def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_
                 ts_dict[name][int(date_hls)] = img_data
 
         for mask_fl in mask_lst:
+            # print(mask_fl)
             if name in mask_fl:
                 # print(name)
                 mask_data = np.squeeze(rxr.open_rasterio(mask_fl, masked=False).values)
                 if name in ts_dict.keys():
-                    mask_data = filtering_holes(mask_data, name)
+                    # mask_data = filtering_holes(mask_data, name)
                     mask_dict[name]= mask_data
 
     output_dict = {}
@@ -134,7 +136,10 @@ def get_composite(ts_dict):
     key_lst = []
     # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
     for idx, key in enumerate(sorted(ts_dict.keys())):
-        # print(ts_dict[key].shape)
+
+        if ts_dict[key].shape[0] < 13:
+            print(key, ' ', ts_dict[key].shape)
+        
         if int(key) > 0 and len(out_lst) == 0:
             print(key)
             out_lst.append(ts_dict[key])
@@ -155,6 +160,7 @@ def get_composite(ts_dict):
             print(key)
             out_lst.append(ts_dict[key])
             key_lst.append(key)
+
         elif int(key) > 149 and len(out_lst) == 5:
             print(key)
             out_lst.append(ts_dict[key])
@@ -203,27 +209,49 @@ def plot_timeseries(
     # convert all colors to a list
     colors = [classes[id] for id in classes.keys()]
     colormap = pltc.ListedColormap(colors)
+    # fig, axes = plt.subplots(height, width, layout='constrained')
 
-    plt.figure(figsize=(20,20))
+    # fig = plt.figure(figsize=(20,20))
+    fig = plt.figure()
     for idx in range(1,height*width):
-        plt.subplot(height,width,idx)
+        # plt.subplot(height,width,idx)
+        ax = fig.add_subplot(height, width, idx)
         if idx < 11:
-            plt.title(f'Day {dates[idx-1]}')
-            image = np.transpose(train_ts_set[(idx-1),1:4,:,:], (1,2,0))
+            # plt.title(f'Day {dates[idx-1]}')
+
+            ax.set_title(f'Day {dates[idx-1]}', x=0.5, y=0.95, size=8, color='black')
+            # image = np.transpose(train_ts_set[(idx-1),1:4,:,:], (1,2,0))
+            image = np.transpose(train_ts_set[(idx-1),:3,:,:], (1,2,0))
             image= rescale_image(xr.where(image > -9000, image, -1000))
-            plt.imshow(rescale_truncate(image))
+            plt.axis('off')
+            plt.imshow(rescale_truncate(get_rgb(image)))
         else:
-            plt.title(f'Label')
-            image = mask_arr
+            print('mask shape: ', mask_arr.shape)
+            if len(mask_arr.shape) > 2:
+                image = mask_arr[0]
+
+            ax.set_title('Label', x=0.5, y=0.95, size=8, color='black')
+            # image = mask_arr
+            plt.axis('off')
             plt.imshow(image, cmap = colormap, vmin=0, vmax=len(colors))
-        # plt.savefig(f"{str(data_dir)}{ts_name}-input.png")
+
+    plt.subplots_adjust(wspace=0.025,hspace=0.15)
 
     plt.savefig(f"/home/geoint/tri/match-hls-sen/test-im/{name}-{tile}.png", dpi=300, bbox_inches='tight')
     plt.close()
 
+def get_rgb(data):
+
+    out_image = data.copy()
+
+    out_image[:,:,0] = data[:,:,2]
+    out_image[:,:,2] = data[:,:,0]
+
+    return out_image
+
 if __name__ == "__main__":
 
-    tiles=['PEV','PEA','PFV','PGA']
+    tiles=['PGA']
     master_dir = "/home/geoint/tri/match-hls-sen/"
 
     for tile in tiles:
@@ -253,32 +281,36 @@ if __name__ == "__main__":
 
         out_dir = '/home/geoint/tri/hls_datacube'
 
-        ########################
-        if not os.path.isfile(f'{out_dir}/hls-{tile}.hdf5'):
+    #     ########################
+        # if not os.path.isfile(f'{out_dir}/hls-{tile}-0906.hdf5'):
 
-            h = h5py.File(f'{out_dir}/hls-{tile}.hdf5', 'w')
+        #     h = h5py.File(f'{out_dir}/hls-{tile}-0906.hdf5', 'w')
 
-            for k, v in output_dict.items():
-                h.create_dataset(f"{k}_{tile}_ts", data=v, compression="gzip", compression_opts=9)
-                h.create_dataset(f"{k}_{tile}_mask", data=mask_dict[k], compression="gzip", compression_opts=9)
-            print(f'finished the data processing')
+        #     for k, v in output_dict.items():
+        #         h.create_dataset(f"{k}_{tile}_ts", data=v, compression="gzip", compression_opts=9)
+        #         h.create_dataset(f"{k}_{tile}_mask", data=mask_dict[k], compression="gzip", compression_opts=9)
+        #     print(f'finished the data processing')
+        # else:
+        #     print('Datacube file already exist!')
 
 
     ## Test load h5py file
+
     out_dir = '/home/geoint/tri/hls_datacube'
     print("Test load h5py file")
-    filename= f'{out_dir}/hls-PGA.hdf5'
+    filename= f'{out_dir}/old/planet-etz-2021-0426.hdf5'
+    # filename= f'{out_dir}/hls-PEV.hdf5'
 
     with h5py.File(filename, "r") as file:
-        # ts_arr = file[f'Tappan05_WV02_20181217_PEV_ts'][()]
-        # mask_arr = file[f'Tappan05_WV02_20181217_PEV_mask'][()]
+
+        key =sorted(list(file.keys()))
+
+        ts_arr = file[key[0]][()]
+        mask_arr = file[key[0]][()]
 
         print(sorted(list(file.keys())))
 
-    # print(ts_arr.shape)
-    # print(mask_arr.shape)
+    print(ts_arr.shape)
+    print(mask_arr.shape)
 
-
-    ## Create stepping composite for long timeseries
-
-    # out_array = get_composite(ts_arr)
+    plot_timeseries(ts_arr[:10], mask_arr[0,:3], key, ['1','2','3','4','5','6','7','8','9','10','11','12'], 'ETZ')

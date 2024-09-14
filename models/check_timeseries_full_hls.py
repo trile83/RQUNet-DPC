@@ -11,6 +11,7 @@ from scipy import ndimage
 import matplotlib.pyplot as plt
 import matplotlib.colors as pltc
 import rasterio as rio
+import logging
 
 def rescale_image(image: np.ndarray, rescale_type: str = 'per-image'):
     """
@@ -72,7 +73,7 @@ def filtering_holes(mask_array, name):
 def read_data(
     master_dir: str='',
     tile: str='PEA',
-    year: int=2016,
+    year: int=2018,
     ):
 
     fl_dir = sorted(glob.glob(f"{master_dir}/*.tif"))
@@ -80,6 +81,9 @@ def read_data(
 
     ts_dict = {}
     unique_year = []
+
+    if "-" in tile:
+        tile = tile[:3]
 
     for idx, file in enumerate(fl_dir):
         name = re.search(f'{master_dir}/(.*?).tif', file).group(1)
@@ -91,20 +95,25 @@ def read_data(
 
         cloud_fl = name + '.Fmask.tif'
 
-        if 'V' in tile:
+        if 'EV' in tile or 'FV' in tile:
             cloud_dir = "/home/geoint/tri/hls_cas_16-22_cloud"
+        elif 'CV' in tile:
+            cloud_dir = "/home/geoint/tri/hls_wcas_16-22_cloud"
+        elif 'PFA-R' in tile:
+            cloud_dir = "/home/geoint/tri/hls_pfa_R_cloud_mask"
         elif 'A' in tile:
             cloud_dir = "/home/geoint/tri/hls_etz_16-22_cloud"
+        
+
         cloud_path = os.path.join(cloud_dir, cloud_fl)
 
         # if name == 'Tappan18_WV03_20160307' or name =='Tappan19_WV02_20180119' or name =='Tappan19_WV02_20180119' or name =='Tappan20_WV02_20130430':
         #     continue
 
-    
-        print('year hls: ', year_hls)
-        print('date hls: ', date_hls)
-
         if int(year_hls) == year:
+
+            print('year hls: ', year_hls)
+            print('date hls: ', date_hls)
 
             if year_hls not in unique_year: # check if ts name is seen or not
 
@@ -122,13 +131,22 @@ def read_data(
 
                 print('count cloud pixels: ', count_cloud)
 
-                if count_cloud > 1800000:
+                if 'F' in tile:
+                    cloud_thresh = 7000000
+                elif 'C' in tile:
+                    cloud_thresh = 5000000
+                else:
+                    cloud_thresh = 1800000
+
+                if count_cloud > cloud_thresh:
                     continue
 
                 # print(img_data.shape)
             except:
                 print('Image Error!')
                 continue
+
+            # print('Image shape: ', img_data.shape)
 
             # ts_dict[name].append(img_data)
             if int(date_hls) not in ts_dict[year_hls].keys():
@@ -196,7 +214,7 @@ def get_composite(ts_dict):
             out_lst.append(ts_dict[key])
             key_lst.append(key)
 
-    print(len(out_lst))
+    # print(len(out_lst))
 
 
     out_array = np.stack(out_lst, axis=0)
@@ -241,14 +259,25 @@ def plot_timeseries(
 
 if __name__ == "__main__":
 
-    tiles=['PEA']
-    year = 2016
+    tiles=['PFV-R']
+    year = 2019
 
     for tile in tiles:
-        if 'V' in tile:
+        if 'FV-R' in tile:
             master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_etz_2"
-        elif 'A' in tile:
+        elif 'FV-L' in tile:
+            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015"
+        elif 'EV' in tile:
+            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015"
+        elif 'CV' in tile:
+            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_wcas_2"
+        elif 'FA-L' in tile:
+            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pfa_l"
+        elif 'FA-R' in tile:
+            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pfa_r"
+        elif 'EA' in tile:
             master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_etz2015"
+        
 
         # print(master_dir)
         ts_dict = read_data(master_dir, tile, year)
@@ -256,9 +285,9 @@ if __name__ == "__main__":
         output_dict = {}
 
         for key in ts_dict.keys():
-            print(key)
+            # print(key)
             # print(len(ts_dict[key]))
-            print(ts_dict[key].keys())
+            # print(ts_dict[key].keys())
 
             ts_arr, date_lst = get_composite(ts_dict[key])
 
@@ -290,16 +319,16 @@ if __name__ == "__main__":
 
 
     ## Test load h5py file
-    out_dir = '/home/geoint/tri/hls_datacube'
-    print("Test load h5py file")
-    filename= f'{out_dir}/hls-{tile}-{year}-full.hdf5'
+    # out_dir = '/home/geoint/tri/hls_datacube'
+    # print("Test load h5py file")
+    # filename= f'{out_dir}/hls-{tile}-{year}-full.hdf5'
 
-    with h5py.File(filename, "r") as file:
-        ts_arr = file[f'{tile}_{year}_ts'][()]
+    # with h5py.File(filename, "r") as file:
+    #     ts_arr = file[f'{tile}_{year}_ts'][()]
 
-        print(ts_arr.shape)
+    #     print(ts_arr.shape)
 
-        print(sorted(list(file.keys())))
+    #     print(sorted(list(file.keys())))
 
         # plot_timeseries(ts_arr, ts_arr[0], 'PEV-large', 'PEV')
 
