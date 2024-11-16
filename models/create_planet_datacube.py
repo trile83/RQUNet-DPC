@@ -66,6 +66,9 @@ def read_data(master_dir, tile='PEA', year_set='2016', mask_dir_path=''):
             #img_data = tifffile.imread(file)
             print(f"image shape: {img_data.shape}")
 
+            print('img_data max: ', np.max(img_data))
+            print('img_data min: ', np.min(img_data))
+
             count+=1
             ts_dict[tile][year_set].append(img_data[:-1,:,:])
         except:
@@ -142,10 +145,10 @@ def plot_timeseries(
 
 if __name__ == "__main__":
 
-    tile='planet-etz'
+    tile='planet-cas'
     year="2021"
 
-    master_dir = "/home/geoint/tri/planet-data/tile03/"
+    master_dir = "/home/geoint/tri/planet-data/tile01/"
     ts_dict = read_data(master_dir, tile, year)
 
     for key in ts_dict.keys():

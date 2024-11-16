@@ -28,17 +28,17 @@ torch.backends.cudnn.benchmark = True
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
 parser.add_argument('--model', default='unet', type=str, help='unet')
-parser.add_argument('--dataset', default='Tappan01', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
+parser.add_argument('--dataset', default='Tappan01_WV02_20181217', type=str, help='Tappan01, Tappan05')
 parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
-parser.add_argument('--batch_size', default=64, type=int)
+parser.add_argument('--batch_size', default=1, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=500, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default='0,1', type=str)
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -48,12 +48,18 @@ parser.add_argument('--train_what', default='all', type=str)
 parser.add_argument('--img_dim', default=64, type=int)
 parser.add_argument('--ts_length', default=10, type=int)
 parser.add_argument('--pad_size', default=0, type=int)
+parser.add_argument('--num_chips', default=100, type=int)
+parser.add_argument('--num_val', default=20, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
-parser.add_argument('--num_chips', default=1000, type=int)
-parser.add_argument('--num_val', default=200, type=int)
 parser.add_argument('--standardization', default='local', type=str)
-parser.add_argument('--normalization', default=0.0001, type=float)
+parser.add_argument('--normalization', default=15000, type=float)
 parser.add_argument('--rescale', default='per-ts', type=str)
+parser.add_argument('--loss', default='crossentropy', type=str)
+parser.add_argument('--channels', default=10, type=int)
+parser.add_argument('--crop_thresh', default=0.3, type=float, help='binary balance for crop class')
+parser.add_argument('--noncrop_thresh', default=0.5, type=float, help='binary balance for non-crop class')
+parser.add_argument('--noncrop_pct', default=0.1, type=float, help='percentage of image chips for mainly noncrop chips')
+
 
 def normalize_image(image: np.ndarray, normalize: float):
     """
@@ -296,83 +302,340 @@ def get_composite(ts_arr):
     return out_array
 
 
-def get_train_set(args, list_ts, tile='PEV'):
+def get_train_set(args, list_ts):
     
     # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
     # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
 
     ### UPDATE 09/01 - new datacube with small TS time series
-    filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
+    # if tile =='PEV':
+    #     filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
 
     train_ts_set = []
     train_mask_set = []
-
-    temp_ts_set = []
-    temp_mask_set = []
+    val_ts_set = []
+    val_mask_set = []
     
     for ts_name in list_ts:
-    
-        print(ts_name)
-        # with h5py.File(filename, "r") as file:
-        #     if ts_name == 'Tappan06' or ts_name == 'Tappan07':
-        #         ts_arr = file[f'{str(ts_name)}_PFV_ts'][()]
-        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
 
-        #         # ref_im_fl = f"/home/geoint/tri/hls/{str(ts_name)}_HLS.S30.T28PFV.2021179T112119.v2.0.tif"
-        #         # ref_im = rxr.open_rasterio(ref_im_fl)
-        #     else:
-        #         ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-        #         mask_arr = file[f'{str(ts_name)}_mask'][()]
+        ## temporary list to store data from each TS
+        temp_ts_set = []
+        temp_mask_set = []
+    
+        print("Get data from Tappan: ", ts_name)
+
+        ### UPDATE 09/01 - new datacube with small TS time series
+        if int(ts_name[6:8]) in [2,4,5,7,17]:
+            tile ='PFV'
+            filename = "/projects/kwessel4/hls_datacube/hls-PFV.hdf5"
+        elif int(ts_name[6:8]) < 19:
+            tile ='PEV'
+            filename = "/projects/kwessel4/hls_datacube/hls-PEV.hdf5"
+        elif int(ts_name[6:8]) < 32:
+            tile ='PEA'
+            filename = "/projects/kwessel4/hls_datacube/hls-PEA.hdf5"
+        elif int(ts_name[6:8]) >= 32:
+            tile ='PGA'
+            filename = "/projects/kwessel4/hls_datacube/hls-PGA.hdf5"
 
         #### UPDATEs 09/01
         with h5py.File(filename, "r") as file:
-            ts_arr = file[f'{str(ts_name)}_PEV_ts'][()]
-            mask_arr = file[f'{str(ts_name)}_PEV_mask'][()]
+            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
+            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
 
         print("out ts arr shape: ", ts_arr.shape)
 
-        ts_arr = get_composite(ts_arr)
+        # if ts_arr.shape[0] > args.ts_length:
+        #     ts_arr = get_composite(ts_arr, args.ts_length)
 
-        mask_arr[mask_arr != 2] = 0
-        mask_arr[mask_arr == 2] = 1
+        print("out ts arr max pixel value: ", np.max(ts_arr))
+        print("out ts arr min pixel value: ", np.min(ts_arr))
+
+        # mask_arr = mask_arr[mask_arr != 7]
+        # ts_arr = ts_arr[mask_arr != 7]
 
         input_size = args.img_dim
         total_ts_len = args.ts_length # L
         padding_size = args.pad_size
 
-        ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+        print('original ts array shape: ', ts_arr.shape)
 
-        for i in range(args.num_chips+args.num_val):
+        # nir = np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)
+        # print('nir band ts array shape: ', nir.shape)
+
+        if args.channels == 10:
+            ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
+        elif args.channels == 4:
+            ts_arr = np.concatenate((ts_arr[:args.ts_length,1:4,:,:], np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)), axis=1)
+            
+        ## TEST: 12/11/2023
+        if args.normalization is not None:
+            ts_arr = normalize_image(ts_arr, args.normalization)
+
+        print("out ts arr max pixel value after normalize: ", np.max(ts_arr))
+        print("out ts arr min pixel value after normalize: ", np.min(ts_arr))
+
+        # mask_ori_arr = mask_arr
+
+        print("unique class in mask: ", np.unique(mask_arr, return_counts=True))
+
+        binary_balance = args.crop_thresh
+        include = True
+        pct_noncrop = args.noncrop_pct
+
+        generated_train_patches = 0
+        noncrop_count = 0
+
+        ## get train set
+        while generated_train_patches < (args.num_chips):
             ts, mask = chipper(ts_arr[:,:,:,:], mask_arr, input_size=args.img_dim)
+
+            ## generate noncrop chips
+            if noncrop_count < args.num_chips*pct_noncrop:
+
+                # first condition, tile must have valid classes
+                if (ts.min() < -100 or mask.min() < 0):
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+
+                ## mask does not contain nodata (class "2")
+                if np.count_nonzero(mask==2) > 0:
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+
+                if args.noncrop_thresh != 0 and np.count_nonzero(mask==0)< \
+                            int(mask.shape[1]*
+                                mask.shape[2]*
+                                args.noncrop_thresh
+                                ):
+                    continue
+
+
+                ### Visualization
+                plt.figure(figsize=(20,20))
+                plt.subplot(1,2,1)
+                plt.title("Image")
+                image = np.transpose(ts[0,0,1:4,:,:], (1,2,0))
+                # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+                image = rescale_truncate(image)
+                plt.imshow(image)
+                plt.subplot(1,2,2)
+                plt.title(f"Segmentation Label w {np.count_nonzero(mask == 0)/(mask.shape[1]*mask.shape[2])}% noncrop")
+                image = np.transpose(mask[0,:,:], (0,1))
+                plt.imshow(image)
+                plt.savefig(f"/projects/kwessel4/dpc/output/image/training-noncrop-{str(generated_train_patches)}.png")
+                plt.close()
+
+                noncrop_count += 1
+
+            else:
+
+                # first condition, tile must have valid classes
+                if (ts.min() < -100 or mask.min() < 0):
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+
+                # second condition, mask does not contain nodata (class "2")
+                if np.count_nonzero(mask==2) > 0:
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+                    
+                # condition, if include, number of labels must be at least 2
+                if include and np.unique(mask).shape[0] < 2:
+                    #print('mask unique values condition not met: ', generated_patches)
+                    continue
+
+                # balancing for binary classes, only applies to binary problem
+                if args.crop_thresh != 0 and np.count_nonzero(mask == 1) < \
+                        int(
+                                mask.shape[1] *
+                                mask.shape[2] *
+                                args.crop_thresh
+                        ):
+                    #print('binary condition not met: ', generated_patches)
+                    continue
+
+                # balancing for binary classes, only applies to binary problem
+                # if args.noncrop_thresh != 0 and np.count_nonzero(mask == 0) < \
+                #         int(
+                #                 mask.shape[1] *
+                #                 mask.shape[2] *
+                #                 args.noncrop_thresh
+                #         ):
+                #     #print('binary condition not met for background class: ', generated_patches)
+                #     continue
+
             ts = np.squeeze(ts)
 
-            if args.rescale == 'per-ts':
-                ts = rescale_image(ts, args.rescale)
-            else:
+            ## TEST: 12/11/2023
+            if args.rescale is not None:
+                ts = rescale_image(ts,args.rescale)
+            if args.standardization is not None or \
+                    args.standardization != 'None':
                 for frame in range(ts.shape[0]):
-                    if args.normalization is not None:
-                        ts[frame] = normalize_image(ts[frame], args.normalization)
+                    ts[frame] = standardize_image(ts[frame],args.standardization)
 
-                    if args.rescale is not None:
-                        ts[frame] = rescale_image(ts[frame],args.rescale)
+            ### Visualization
+            # plt.figure(figsize=(20,20))
+            # plt.subplot(1,2,1)
+            # plt.title("Image")
+            # image = np.transpose(ts[0,1:4,:,:], (1,2,0))
+            # # image = np.transpose(z_mean[0,:,:,:], (1,2,0))
+            # image = rescale_truncate(image)
+            # plt.imshow(image)
+            # plt.subplot(1,2,2)
+            # plt.title(f"Segmentation Label w {np.count_nonzero(mask == 1)/(mask.shape[1]*mask.shape[2])}")
+            # image = np.transpose(mask[0,:,:], (0,1))
+            # plt.imshow(image)
+            # plt.savefig(f"/projects/kwessel4/dpc/output/image/training-{str(generated_train_patches)}-dpc-unet-{ts_name}-plot.png")
+            # plt.close()
 
-                    if args.standardization is not None:
-                        ts[frame] = standardize_image(ts[frame],args.standardization)
+            
+            # Works November 2023
+
+            # if args.rescale == 'per-ts' and args.normalization is None and args.standardization is None:
+            #     ts = rescale_image(ts, args.rescale)
+                
+            # else:
+                
+            #     if args.normalization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = normalize_image(ts[frame], args.normalization)
+
+            #     if args.standardization is not None:
+            #         for frame in range(ts.shape[0]):
+            #             ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            #     if args.rescale is not None:
+            #         ts = rescale_image(ts,args.rescale)
 
             mask = np.squeeze(mask)
 
-            # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
+            # # ts, mask = padding_ts(ts, mask, padding_size=padding_size)
 
             temp_ts_set.append(ts)
             temp_mask_set.append(mask)
 
-    train_ts_set = np.stack(temp_ts_set, axis=0)
-    train_mask_set = np.stack(temp_mask_set, axis=0)
+            generated_train_patches += 1
+
+        print(f'number of {args.noncrop_thresh} noncrop chips: ', noncrop_count)
+
+        train_ts = np.stack(temp_ts_set, axis=0)
+        train_mask = np.stack(temp_mask_set, axis=0)
+
+        train_ts_set.append(train_ts)
+        train_mask_set.append(train_mask)
+
+        ## get validation set
+        temp_ts_set = []
+        temp_mask_set = []
+        
+        generated_val_patches = 0
+        noncrop_count = 0
+        while generated_val_patches < (args.num_val):
+            ts, mask= chipper(ts_arr, mask_arr, input_size=args.img_dim)
+
+            ## generate entirely noncrop chips
+            if noncrop_count < args.num_val*pct_noncrop:
+
+                # first condition, tile must have valid classes
+                if (ts.min() < -100 or mask.min() < 0):
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+
+                ## mask does not contain nodata (class "2")
+                if np.count_nonzero(mask==2) > 0:
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+
+                if args.noncrop_thresh != 0 and np.count_nonzero(mask==0)<\
+                                                int(mask.shape[1]*
+                                                    mask.shape[2]*
+                                                    args.noncrop_thresh):
+                    continue
+
+                noncrop_count += 1
+            else:
+
+                # first condition, tile must have valid classes
+                if (ts.min() < -100 or mask.min() < 0):
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+
+                # second condition, mask does not contain nodata (class "7")
+                if np.count_nonzero(mask==2) > 0:
+                    #print('nodata condition not met: ', generated_patches)
+                    continue
+                    
+                # condition, if include, number of labels must be at least 2
+                if include and np.unique(mask).shape[0] < 2:
+                    #print('mask unique values condition not met: ', generated_patches)
+                    continue
+
+                # balancing for binary classes, only applies to binary problem
+                if args.crop_thresh != 0 and np.count_nonzero(mask == 1) < \
+                        int(
+                                mask.shape[1] *
+                                mask.shape[2] *
+                                args.crop_thresh
+                        ):
+                    #print('binary condition not met: ', generated_patches)
+                    continue
+
+                # balancing for binary classes, only applies to binary problem
+                # if args.noncrop_thresh != 0 and np.count_nonzero(mask == 0) < \
+                #         int(
+                #                 mask.shape[1] *
+                #                 mask.shape[2] *
+                #                 args.noncrop_thresh
+                #         ):
+                #     #print('binary condition not met for background class: ', generated_patches)
+                #     continue
+
+            ts = np.squeeze(ts)
+
+            ## TEST: 12/11/2023
+            if args.rescale is not None:
+                ts = rescale_image(ts,args.rescale)
+            if args.standardization is not None or \
+                    args.standardization != 'None':
+                for frame in range(ts.shape[0]):
+                    ts[frame] = standardize_image(ts[frame],args.standardization)
+
+            mask = np.squeeze(mask)
+
+            temp_ts_set.append(ts)
+            temp_mask_set.append(mask)
+
+            generated_val_patches += 1
+
+        print('number of entirely noncrop chips: ', noncrop_count)
+
+        val_ts = np.stack(temp_ts_set, axis=0)
+        val_mask = np.stack(temp_mask_set, axis=0)
+
+        
+
+        val_ts_set.append(val_ts)
+        val_mask_set.append(val_mask)
+
+    train_ts_set = np.concatenate(train_ts_set, axis=0)
+    train_mask_set = np.concatenate(train_mask_set, axis=0)
+
+    val_ts_set = np.concatenate(val_ts_set, axis=0)
+    val_mask_set = np.concatenate(val_mask_set, axis=0)
 
     print(f"train ts set shape: {train_ts_set.shape}")
     print(f"train mask set shape: {train_mask_set.shape}")
 
-    return train_ts_set, train_mask_set, args.num_val*len(list_ts)
+    print(f"val ts set shape: {val_ts_set.shape}")
+    print(f"val mask set shape: {val_mask_set.shape}")
+
+    del temp_ts_set
+    del temp_mask_set
+
+
+    return train_ts_set[:,1,:,:,:], train_mask_set, val_ts_set[:,1,:,:,:], val_mask_set
 
 
 class EarlyStopper:
@@ -402,12 +665,26 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
 
-    list_ts = ['Tappan01_WV02_20181217']
+    # list_ts = ['Tappan01_WV02_20181217']
+
+    list_ts = [
+                'Tappan18_WV02_20170126',
+                'Tappan01_WV02_20181217',
+                'Tappan19_WV03_20160617',
+                'Tappan17_WV02_20181217',
+                'Tappan02_WV02_20181217',
+                'Tappan15_WV02_20160108',
+                'Tappan16_WV02_20180508',
+                'Tappan07_WV02_20190207',
+                ]
+
+
+
     ts_name=args.dataset
 
     input_size = args.img_dim
 
-    train_ts_set, train_mask_set, num_val = get_train_set(args, list_ts)
+    train_ts_set, train_mask_set, val_ts_set, val_mask_set = get_train_set(args, list_ts)
 
     ### U-Net model ###
 
@@ -455,11 +732,12 @@ def main():
 
     # print(f"train mask set shape: {train_mask_set.shape}")
 
-    train_seg_set = tsDataset(train_ts_set[:-num_val],  train_mask_set[:-num_val])
-    val_seg_set = tsDataset(train_ts_set[-num_val:],  train_mask_set[-num_val:])
-    loader_args_1 = dict(batch_size=1, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
+    train_seg_set = tsDataset(train_ts_set, train_mask_set)
+    val_seg_set = tsDataset(val_ts_set, val_mask_set)
+    loader_args_1 = dict(batch_size=args.batch_size, num_workers=4, pin_memory=True, drop_last=True, shuffle=True)
     train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
     val_segment_dl = DataLoader(val_seg_set, **loader_args_1)
+
 
     print(f"Length of segmentation input training set {len(train_segment_dl)}")
     print("Start segmentation training!")
@@ -467,7 +745,7 @@ def main():
     best_acc = 0
     min_loss = np.inf
 
-    early_stopper = EarlyStopper(patience=10, min_delta=0.2)
+    early_stopper = EarlyStopper(patience=40, min_delta=0.2)
 
     for epoch in range(args.start_epoch, args.epochs):
         train_loss = train_segment(train_segment_dl, unet_segment, segment_optimizer)
@@ -504,10 +782,10 @@ def main():
             break
 
 
-    plt.plot(train_loss_lst, color ="blue")
-    plt.plot(val_loss_lst, color = "red")
-    plt.savefig(f"/projects/kwessel4/dpc/output/plot/unet_meanframe_train_loss_{today}.png")
-    plt.close()
+    # plt.plot(train_loss_lst, color ="blue")
+    # plt.plot(val_loss_lst, color = "red")
+    # plt.savefig(f"/projects/kwessel4/dpc/output/plot/unet_meanframe_train_loss_{today}.png")
+    # plt.close()
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
@@ -533,13 +811,16 @@ def train_segment(data_loader, segment_model, optimizer):
         features = input['ts'].to(cuda, dtype=torch.float32)
         input_mask = input['mask'].to(cuda, dtype=torch.long)
 
-        (B,L,F,H,W) = features.shape
-        batch = 1
+        #### mean frame
+        # (B,L,F,H,W) = features.shape
+        # batch = 1
 
-        features = features.view(B*L,F,H,W)
-        features = features.mean(dim=0)
-        features = features.view(batch,F,H,W)
-        input_mask = input_mask.view(batch,H,W)
+        # features = features.view(B*L,F,H,W)
+        # features = features.mean(dim=0)
+        # features = features.view(batch,F,H,W)
+        # input_mask = input_mask.view(batch,H,W)
+
+        (B,F,H,W) = features.shape
 
         # print(f"features shape: {features.shape}")
         # print(f"mask shape: {input_mask.shape}")
@@ -570,13 +851,15 @@ def val_segment(data_loader, segment_model, optimizer):
             features = input['ts'].to(cuda, dtype=torch.float32)
             input_mask = input['mask'].to(cuda, dtype=torch.long)
 
-            (B,L,F,H,W) = features.shape
-            batch = 1
+            # (B,L,F,H,W) = features.shape
+            # batch = 1
 
-            features = features.view(B*L,F,H,W)
-            features = features.mean(dim=0)
-            features = features.view(batch,F,H,W)
-            input_mask = input_mask.view(batch,H,W)
+            # features = features.view(B*L,F,H,W)
+            # features = features.mean(dim=0)
+            # features = features.view(batch,F,H,W)
+            # input_mask = input_mask.view(batch,H,W)
+
+            (B,F,H,W) = features.shape
 
             mask_pred, _ = segment_model(features)
 

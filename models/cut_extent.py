@@ -2,15 +2,38 @@ import numpy as np
 import rasterio
 from rasterio import features
 from rasterio.mask import mask
+from rasterio.crs import CRS
 import glob
 import re
+import os
 
 # the first one is your raster on the right
 # and the second one your red raster
 
-tile='PEA'
-resamp_dir = f'/home/geoint/tri/match-hls-sen/{tile}-1date'
-hls_dir = '/home/geoint/tri/resampled_senegal_hls/mode/ETZ'
+tile='all'
+
+resamp_dir = f'/home/geoint/tri/match-hls-sen/{tile}-1date' # directory after trimming no-data border of cut raster
+if tile in ['PEV', 'PFV']:
+    hls_dir = '/home/geoint/tri/resampled_senegal_hls/mode/eCAS'
+    hls_cloud_dir = '/home/geoint/tri/hls_cas_16-22_cloud'
+elif tile in ['PEA','PFA','PGA']:
+    hls_dir = '/home/geoint/tri/resampled_senegal_hls/mode/ETZ'
+    hls_cloud_dir = '/home/geoint/tri/hls_etz_16-22_cloud'
+elif tile in ['PCV']:
+    hls_dir = '/home/geoint/tri/resampled_senegal_hls/mode/wCAS'
+    hls_cloud_dir = '/home/geoint/tri/hls_wcas_16-22_cloud'
+
+elif tile in ['PDB']:
+    hls_dir = '/home/geoint/tri/resampled_senegal_hls/mode/ETZ/'
+    hls_cloud_dir = '/home/geoint/tri/hls_pdb_cloud_mask/'
+elif tile in ['PDA']:
+    hls_dir = '/home/geoint/tri/resampled_senegal_hls/mode/ETZ/'
+    hls_cloud_dir = '/home/geoint/tri/hls_pda_cloud_mask/'
+
+elif tile in ['all']:
+    hls_dir = '/home/geoint/tri/resampled_senegal_hls/multiyear/'
+    hls_cloud_dir = '/home/geoint/tri/hls_pda_cloud_mask/'
+
 resamp_lst = sorted(glob.glob(resamp_dir+'/*.tif'))
 hls_lst = sorted(glob.glob(hls_dir+'/*.tif'))
 
@@ -19,12 +42,15 @@ hls_lst = sorted(glob.glob(hls_dir+'/*.tif'))
 
 for resamp_fl in resamp_lst:
 
-    name_resamp = re.search(f'/match-hls-sen/{tile}-1date/HLS.S30.T28PEA.2016001T112452-(.*?).tif', resamp_fl).group(1)
+    print(resamp_fl)
+
+    name_resamp = re.search(f'/home/geoint/tri/match-hls-sen/{tile}-1date/(.*?).tif', resamp_fl).group(1)[-22:]
+    # print(name_resamp)
 
     for i in hls_lst:
-        if name_resamp in i:
-            print(i)
-
+        # print(i)
+        if name_resamp[:8] in i:
+            # print(i)
             hls_fl = i
 
     with rasterio.open(resamp_fl) as src, \
@@ -62,7 +88,14 @@ for resamp_fl in resamp_lst:
 
         # save the result
         # (don't forget to set the appropriate metadata)
+        if not os.path.isdir(f'/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}/'):
+            os.mkdir(f'/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}/')
+
         out_fl_name = f'/home/geoint/tri/resampled_senegal_hls/trimmed/{tile}/{name_resamp}.tif'
+
+        # if os.path.isfile(out_fl_name):
+        #     continue
+        
         with rasterio.open(
             # '/home/geoint/tri/match-hls-sen/result.tif',
             out_fl_name,
@@ -73,5 +106,6 @@ for resamp_fl in resamp_lst:
             count=src_to_crop.count,
             dtype=out_img.dtype,
             transform=out_transform,
+            crs=CRS.from_epsg(32628),
         ) as dst:
             dst.write(out_img)

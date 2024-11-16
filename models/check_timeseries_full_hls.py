@@ -83,27 +83,40 @@ def read_data(
     unique_year = []
 
     if "-" in tile:
-        tile = tile[:3]
+        stile = tile[:3]
+    else:
+        stile = tile
 
     for idx, file in enumerate(fl_dir):
         name = re.search(f'{master_dir}/(.*?).tif', file).group(1)
 
-        if tile not in name:
+        if stile not in name:
             continue
-        year_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[:4]
-        date_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[4:]
+        year_hls = re.search(f'T28{stile}.(.*?)T', file).group(1)[:4]
+        date_hls = re.search(f'T28{stile}.(.*?)T', file).group(1)[4:]
 
         cloud_fl = name + '.Fmask.tif'
 
-        if 'EV' in tile or 'FV' in tile:
+        if tile == 'PFV-R':
+            cloud_dir = "/home/geoint/tri/hls_pfv_r_cloud_mask"
+        elif 'EV' in tile or 'FV' in tile:
             cloud_dir = "/home/geoint/tri/hls_cas_16-22_cloud"
         elif 'CV' in tile:
             cloud_dir = "/home/geoint/tri/hls_wcas_16-22_cloud"
-        elif 'PFA-R' in tile:
+        elif tile == 'PFA-R':
             cloud_dir = "/home/geoint/tri/hls_pfa_R_cloud_mask"
-        elif 'A' in tile:
+        elif 'DA' in tile:
+            cloud_dir = "/home/geoint/tri/hls_pda_cloud_mask"
+        elif 'EB' in tile:
+            cloud_dir = "/home/geoint/tri/hls_peb_cloud_mask"
+        elif 'DB' in tile:
+            cloud_dir = "/home/geoint/tri/hls_pdb_cloud_mask"
+        elif 'GA' in tile:
+            cloud_dir = "/home/geoint/tri/hls_pga_cloud_mask"
+        elif tile == 'PEA':
             cloud_dir = "/home/geoint/tri/hls_etz_16-22_cloud"
-        
+        elif tile == 'PFA':
+            cloud_dir = "/home/geoint/tri/hls_etz_16-22_cloud"
 
         cloud_path = os.path.join(cloud_dir, cloud_fl)
 
@@ -122,8 +135,14 @@ def read_data(
                 ts_dict[year_hls] = {}
 
             try:
-
                 img_data = np.squeeze(rxr.open_rasterio(file, masked=False).values)
+            except:
+                print('Multispec Image Error!')
+                continue
+
+            try:
+
+                # img_data = np.squeeze(rxr.open_rasterio(file, masked=False).values)
 
                 cloud_mask = np.squeeze(rxr.open_rasterio(cloud_path, mask=False).values)
                 temp_arr = cloud_mask % 16
@@ -143,7 +162,7 @@ def read_data(
 
                 # print(img_data.shape)
             except:
-                print('Image Error!')
+                print('Cloud Mask Image Error!')
                 continue
 
             # print('Image shape: ', img_data.shape)
@@ -209,7 +228,7 @@ def get_composite(ts_dict):
             print(key)
             out_lst.append(ts_dict[key])
             key_lst.append(key)
-        elif int(key) > 340 and len(out_lst) == 9:
+        elif int(key) > 339 and len(out_lst) == 9:
             print(key)
             out_lst.append(ts_dict[key])
             key_lst.append(key)
@@ -259,80 +278,94 @@ def plot_timeseries(
 
 if __name__ == "__main__":
 
-    tiles=['PFV-R']
-    year = 2019
+    # tiles=['PEV']
+    # year = 2019
 
-    for tile in tiles:
-        if 'FV-R' in tile:
-            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_etz_2"
-        elif 'FV-L' in tile:
-            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015"
-        elif 'EV' in tile:
-            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015"
-        elif 'CV' in tile:
-            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_wcas_2"
-        elif 'FA-L' in tile:
-            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pfa_l"
-        elif 'FA-R' in tile:
-            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pfa_r"
-        elif 'EA' in tile:
-            master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_etz2015"
+    # for tile in tiles:
+    #     if 'FV-R' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pfv_r"
+    #     elif 'FV-L' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_cas_PFV_L"
+    #     elif 'EV' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_cas2015"
+    #     elif 'CV' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_wcas_2"
+    #     elif 'FA-L' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pfa_l"
+    #     elif tile == 'PFA-R':
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pfa_r"
+    #     elif 'EA' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_etz2015"
+    #     elif 'GA' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pga"
+    #     elif 'DA' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pda"
+    #     elif 'EB' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_peb"
+    #     elif 'DB' in tile:
+    #         master_dir = "/home/geoint/PycharmProjects/tensorflow/out_hls_pdb"
+
+    #     print('master dir: ', master_dir)
         
 
-        # print(master_dir)
-        ts_dict = read_data(master_dir, tile, year)
+    #     # print(master_dir)
+    #     ts_dict = read_data(master_dir, tile, year)
 
-        output_dict = {}
+    #     output_dict = {}
 
-        for key in ts_dict.keys():
-            # print(key)
-            # print(len(ts_dict[key]))
-            # print(ts_dict[key].keys())
+    #     for key in ts_dict.keys():
+    #         # print(key)
+    #         # print(len(ts_dict[key]))
+    #         # print(ts_dict[key].keys())
 
-            ts_arr, date_lst = get_composite(ts_dict[key])
+    #         ts_arr, date_lst = get_composite(ts_dict[key])
 
-            if key not in output_dict.keys():
-                output_dict[key] = ts_arr
+    #         if key not in output_dict.keys():
+    #             output_dict[key] = ts_arr
 
-            print('total time series length: ', len(date_lst))
+    #         print('total time series length: ', len(date_lst))
 
-            # mask_arr = mask_dict[key]
+    #         # mask_arr = mask_dict[key]
 
-            if len(ts_dict[key]) < 10:
-                print(key, ' not enough frames in time series')
-                continue
+    #         if len(ts_dict[key]) < 10:
+    #             print(key, ' not enough frames in time series')
+    #             continue
 
-            plot_timeseries(ts_arr, key, date_lst, tile)
+    #         plot_timeseries(ts_arr, key, date_lst, tile)
 
-        out_dir = '/home/geoint/tri/hls_datacube'
-
-        # ########################
-        if not os.path.isfile(f'{out_dir}/hls-{tile}-{year}-full.hdf5'):
-
-            h = h5py.File(f'{out_dir}/hls-{tile}-{year}-full.hdf5', 'w')
-
-            for k, v in output_dict.items():
-                h.create_dataset(f"{tile}_{k}_ts", data=v, compression="gzip", compression_opts=9)
-
-            print(f'finished the data processing')
+    #     out_dir = '/home/geoint/tri/hls_datacube'
 
 
 
-    ## Test load h5py file
-    # out_dir = '/home/geoint/tri/hls_datacube'
-    # print("Test load h5py file")
-    # filename= f'{out_dir}/hls-{tile}-{year}-full.hdf5'
+    #     ########################
+    #     if not os.path.isfile(f'{out_dir}/hls-{tile}-{year}-full.hdf5'):
 
-    # with h5py.File(filename, "r") as file:
-    #     ts_arr = file[f'{tile}_{year}_ts'][()]
+    #         h = h5py.File(f'{out_dir}/hls-{tile}-{year}-full.hdf5', 'w')
 
-    #     print(ts_arr.shape)
+    #         for k, v in output_dict.items():
+    #             h.create_dataset(f"{tile}_{k}_ts", data=v, compression="gzip", compression_opts=9)
 
-    #     print(sorted(list(file.keys())))
+    #         print(f'finished the data processing')
+
+
+
+    #### Test load h5py file
+    out_dir = '/home/geoint/tri/hls_datacube'
+    print("Test load h5py file")
+    tile='PEV'
+    year = 2019
+    filename= f'{out_dir}/2019/hls-{tile}-{year}-full.hdf5'
+
+    with h5py.File(filename, "r") as file:
+        ts_arr = file[f'{tile}_{year}_ts'][()]
+
+        print(ts_arr.shape)
+
+        print(sorted(list(file.keys())))
 
         # plot_timeseries(ts_arr, ts_arr[0], 'PEV-large', 'PEV')
 
-    # print(ts_arr.shape)
+    print(ts_arr.shape)
     # print(mask_arr.shape)
 
 

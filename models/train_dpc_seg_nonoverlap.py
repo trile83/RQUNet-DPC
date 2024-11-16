@@ -20,6 +20,7 @@ from utils.utils import AverageMeter, save_checkpoint, denorm, calc_topk_accurac
 from tqdm import tqdm
 import argparse
 import h5py
+import math
 import logging
 import torchvision.utils as vutils
 import cv2
@@ -38,7 +39,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
 parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
 parser.add_argument('--dataset', default='Tappan01_WV02_20181217', type=str, help='PEV_2021, PFV_2021, or Tappan01, Tappan05')
-parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
+parser.add_argument('--seq_len', default=4, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
@@ -239,13 +240,18 @@ def get_seq(sequence, seq_length):
     return: array with all time-series chunk; prediction size =1, num_seq = 4
     '''
     (I,L,C,H,W) = sequence.shape
-    all_arr = np.zeros((I,L-seq_length+1,seq_length,C,H,W))
+    all_arr = np.zeros((I,int(L//seq_length),seq_length,C,H,W))
     for j in range(I):
-        for i in range(seq_length, L+1):
-            array = sequence[j,i-seq_length:i,:,:,:] # SL, C, H, W
-            all_arr[j,i-seq_length] = array
+        for i in range(0,L+1-seq_length,seq_length):
+            array = sequence[j,i:i+seq_length,:,:,:] # SL, C, H, W
+            all_arr[j,math.ceil(i/seq_length)] = array
 
-    return all_arr
+
+    # all_arr = np.lib.stride_tricks.sliding_window_view(sequence, seq_length, axis=1)
+
+    print('all array shape: ', all_arr.shape)
+
+    return all_arr.copy()
 
 def get_chunks(windows, num_seq):
     '''
@@ -269,45 +275,6 @@ def get_chunks(windows, num_seq):
 
     return all_arr
 
-def reverse_chunks(chunks, num_seq):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L2,N,SL,C,H,W) = chunks.shape
-    
-    all_arr = np.zeros((I,L2+num_seq-1,SL,C,H,W))
-    for j in range(I):
-        for i in range(L2):
-            if i < L2-1:
-                array = chunks[j,i,0,:,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:,:] = array
-            elif i == L2-1:
-                array = chunks[j,i,:,:,:,:,:]
-                all_arr[j,i:i+num_seq,:,:,:,:] = array
-            del array
-
-    # for j in range(I):
-    #     all_arr[j,L2+num_seq-1,:,:,:,:] = chunks[j,L2-1,-1,:,:,:,:]
-
-    return all_arr
-
-def reverse_seq(window, seq_length):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L1,SL,C,H,W) = window.shape
-    all_arr = np.zeros((I,L1+seq_length-1,C,H,W))
-    for j in range(I):
-        for i in range(L1):
-            if i < L1-1:
-                array = window[j,i,0,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:] = array
-            elif i == L1-1:
-                array = window[j,i,:,:,:,:]
-                all_arr[j,i:i+seq_length,:,:,:] = array
-            del array
-
-    return all_arr
 
 def chipper(ts_stack, mask, input_size=32):
     '''
@@ -504,18 +471,18 @@ def get_train_set(args, list_ts):
             filename = 'projects/kwessel4/hls_datacube/planet-tile13-train-0917.hdf5'
 
         ### UPDATE 09/01 - new datacube with small TS time series
-        if int(ts_name[6:8]) in [2,4,5,7,17]:
+        if int(ts_name[6:8]) in [2,4,6,7,17]:
             tile ='PFV'
-            filename = "/projects/kwessel4/hls_datacube/hls-PFV.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PFV-epoch2019.hdf5"
         elif int(ts_name[6:8]) < 19:
             tile ='PEV'
-            filename = "/projects/kwessel4/hls_datacube/hls-PEV.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PEV-epoch2019.hdf5"
         elif int(ts_name[6:8]) == 21:
             tile='PDA'
             filename = "/projects/kwessel4/hls_datacube/hls-PDA-0930.hdf5"
         elif int(ts_name[6:8]) < 25:
             tile ='PEA'
-            filename = "/projects/kwessel4/hls_datacube/hls-PEA.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PEA-epoch2019.hdf5"
         elif int(ts_name[6:8]) == 29:
             tile='PDB'
             filename = "/projects/kwessel4/hls_datacube/hls-PDB-0930.hdf5"
@@ -552,7 +519,7 @@ def get_train_set(args, list_ts):
         total_ts_len = args.ts_length # L
         padding_size = args.pad_size
 
-        print('original ts array shape: ', ts_arr.shape)
+        # print('original ts array shape: ', ts_arr.shape)
 
         # nir = np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)
         # print('nir band ts array shape: ', nir.shape)
@@ -608,7 +575,7 @@ def get_train_set(args, list_ts):
             if noncrop_count < args.num_chips*pct_noncrop:
 
                 # first condition, tile must have valid classes
-                if (ts.min() < -100 or mask.min() < 0):
+                if (ts.min() < -0.6 or mask.min() < 0):
                     #print('nodata condition not met: ', generated_patches)
                     continue
 
@@ -645,7 +612,7 @@ def get_train_set(args, list_ts):
             else:
 
                 # first condition, tile must have valid classes
-                if (ts.min() < -100 or mask.min() < 0):
+                if (ts.min() < -0.6 or mask.min() < 0):
                     #print('nodata condition not met: ', generated_patches)
                     continue
 
@@ -753,7 +720,7 @@ def get_train_set(args, list_ts):
             if noncrop_count < args.num_val*pct_noncrop:
 
                 # first condition, tile must have valid classes
-                if (ts.min() < -100 or mask.min() < 0):
+                if (ts.min() < -0.6 or mask.min() < 0):
                     #print('nodata condition not met: ', generated_patches)
                     continue
 
@@ -772,7 +739,7 @@ def get_train_set(args, list_ts):
             else:
 
                 # first condition, tile must have valid classes
-                if (ts.min() < -100 or mask.min() < 0):
+                if (ts.min() < -0.6 or mask.min() < 0):
                     #print('nodata condition not met: ', generated_patches)
                     continue
 
@@ -912,16 +879,16 @@ def main():
 
     ### set 2 for 09-26
 
-    list_ts = [
-                'Tappan18_WV02_20170126',
-                'Tappan01_WV02_20181217',
-                'Tappan15_WV02_20160108',
-                'Tappan17_WV02_20181217',
-                'Tappan16_WV02_20180508',
-                'Tappan19_WV03_20160617',
-                'Tappan20_WV02_20190127',
-                'Tappan23_WV02_20180119',
-                ]
+    # list_ts = [
+    #             'Tappan18_WV02_20170126',
+    #             'Tappan01_WV02_20181217',
+    #             'Tappan15_WV02_20160108',
+    #             'Tappan17_WV02_20181217',
+    #             'Tappan16_WV02_20180508',
+    #             'Tappan19_WV03_20160617',
+    #             'Tappan20_WV02_20190127',
+    #             'Tappan23_WV02_20180119',
+    #             ]
 
     ## ETZ
     # list_ts = [
@@ -947,56 +914,34 @@ def main():
     #             ]
 
 
-    ### All training
+    ### set 1 for 05-29 results
     # list_ts = [
-    #             'Tappan01_WV02_20181217',
-    #             # 'Tappan02_WV03_20160123',
-    #             # 'Tappan03_WV02_20180328',
-    #             # 'Tappan03_WV02_20190127',
-    #             # 'Tappan04_WV03_20160123',
-    #             # 'Tappan05_WV02_20181217',
-    #             'Tappan07_WV02_20190207',
-    #             #'Tappan14_WV02_20161230',
-    #             'Tappan14_WV02_20181217',
-    #             'Tappan14_WV02_20210410',
-    #             'Tappan15_WV02_20160108',
-    #             'Tappan15_WV02_20180430',
-    #             #'Tappan16_WV02_20180422',
-    #             'Tappan16_WV02_20180508',
-    #             'Tappan17_WV02_20181217',
-    #             'Tappan17_WV03_20210209',
-    #             #'Tappan18_WV02_20170126',
-    #             #'Tappan18_WV02_20180422',
-    #             'Tappan18_WV03_20160307',
-    #             #'Tappan18_WV03_20160617',
-    #             'Tappan18_WV03_20211115',
-    #             'Tappan19_WV02_20170126',
-    #             'Tappan19_WV02_20180119',
-    #             #'Tappan19_WV02_20180430',
-    #             #'Tappan19_WV03_20160617',
-    #             #'Tappan19_WV03_20181227',
-    #             #'Tappan20_WV02_20170206',
-    #             'Tappan20_WV02_20180328',
-    #             'Tappan20_WV02_20190127',
-    #             'Tappan21_WV02_20190119',
-    #             'Tappan23_WV02_20170126',
-    #             'Tappan23_WV02_20180119',
-    #             'Tappan24_WV02_20180119',
-    #             # 'Tappan25_WV02_20170302',
-    #             'Tappan25_WV02_20180108',
-    #             # 'Tappan25_WV02_20190521',
-    #             'Tappan25_WV02_20210209',
-    #             # 'Tappan25_WV03_20170304',
-    #             # 'Tappan25_WV03_20201202',
-    #             'Tappan26_WV02_20171201',
-    #             # 'Tappan26_WV02_20200203',
-    #             'Tappan26_WV02_20220106',
-    #             'Tappan29_WV02_20201206',
-    #             # 'Tappan26_WV03_20170304',
-    #             # 'Tappan32_WV03_20160217',
-    #             'Tappan32_WV03_20170529',
-    #             'Tappan33_WV03_20161118'
-    #         ]
+    #             'Tappan18',
+    #             'Tappan01',
+    #             'Tappan19',
+    #             'Tappan17',
+    #             'Tappan02',
+    #             'Tappan15',
+    #             'Tappan16',
+    #             'Tappan07',
+    #             ]
+
+    ### set 2 for 09-26
+
+    list_ts = [
+                'Tappan18',
+                'Tappan01',
+                'Tappan15',
+                'Tappan17',
+                'Tappan16',
+                'Tappan19',
+                'Tappan20',
+                'Tappan23',
+                'Tappan24',
+                'Tappan06'
+                ]
+
+
 
     print('training image list: ', list_ts)
 
@@ -1028,17 +973,17 @@ def main():
 
         ## train set
         train_seq = get_seq(train_ts_set, args.seq_len) #(I,L1,SL,C,H,W)
-        train_chunk = get_chunks(train_seq, args.num_seq)
-        print(f'train chunk sequence shape: {train_chunk.shape}') # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
+        # train_chunk = get_chunks(train_seq, args.num_seq) # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
+        print(f'train seq shape: {train_seq.shape}')
 
         ## validation set
         val_seq = get_seq(val_ts_set, args.seq_len) #(I,L1,SL,C,H,W)
-        val_chunk = get_chunks(val_seq, args.num_seq)
-        #print(f'val chunk sequence shape: {val_chunk.shape}') # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
+        # val_chunk = get_chunks(val_seq, args.num_seq) # (I,L2,N,SL,C,H,W); L2 = L-seq_len-num_seq
+        print(f'val seq shape: {val_seq.shape}') 
 
-        (I,L2,N,SL,C,H,W) = train_chunk.shape
-        train_set = tsDataset(train_chunk, train_mask_set, train_ts_set)
-        val_set = tsDataset(val_chunk, val_mask_set, val_ts_set)
+        (I,N,SL,C,H,W) = train_seq.shape
+        train_set = tsDataset(train_seq, train_mask_set, train_ts_set)
+        val_set = tsDataset(val_seq, val_mask_set, val_ts_set)
 
         with open(out_train_file, 'wb') as f:
             np.save(f, train_set, allow_pickle=True)
@@ -1169,7 +1114,9 @@ def main():
 
                 # print('original ts shape: ', ori_ts.shape)
 
-                (I,L2,N,SL,C,H,W) = input_ts.shape
+                # (I,L2,N,SL,C,H,W) = input_ts.shape
+
+                (I,N,SL,C,H,W) = input_ts.shape
 
                 # input_ts = rearrange(input_ts, "b l2 n sl c h w -> (b l2) n sl c h w")
 
@@ -1179,7 +1126,8 @@ def main():
                 train_sat_dl = DataLoader(train_set, **loader_args_sat)
 
                 output, train_loss = train_dpc(train_sat_dl, model, optimizer, network)
-                train_losses.update(train_loss.item(), I*L2)
+                # train_losses.update(train_loss.item(), I*L2)
+                train_losses.update(train_loss.item(), I)
 
             for idx, input in enumerate(val_dl):
                 input_ts_val = input['ts']
@@ -1203,7 +1151,8 @@ def main():
                 # val_loss_lst.append(val_loss)
 
                 # train_losses.update(train_loss.item(), I*L2)
-                val_losses.update(val_loss.item(), I_val*L2)
+                # val_losses.update(val_loss.item(), I_val*L2)
+                val_losses.update(val_loss.item(), I_val)
 
             # save check_point
             is_best = val_losses.local_avg < min_loss
@@ -1300,7 +1249,9 @@ def train_dpc(data_loader, dpc_model, optimizer, network):
         input_seq = input["x"]
         input_mask = input["mask"]
 
-        (B,L2,N,SL,C,H,W) = input_seq.shape
+        # (B,L2,N,SL,C,H,W) = input_seq.shape
+
+        (B,N,SL,C,H,W) = input_seq.shape
 
         #print('mask tensor unique value: ', torch.unique(input_mask, return_counts=True))
         #print('input mask shape: ', input_mask.shape)
@@ -1355,7 +1306,9 @@ def val_dpc(data_loader, dpc_model, network):
             input_seq = input["x"]
             input_mask = input["mask"]
 
-            (B,L2,N,SL,C,H,W) = input_seq.shape
+            # (B,L2,N,SL,C,H,W) = input_seq.shape
+
+            (B,N,SL,C,H,W) = input_seq.shape
 
             # print(f'input mask shape : {input_mask.shape}') # 1 x batch x input_size x input_size
             if criterion_type == 'BCE' or criterion_type == 'dice':

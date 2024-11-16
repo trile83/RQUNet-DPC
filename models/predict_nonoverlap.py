@@ -43,7 +43,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='unet', type=str, help='encoder for the DPC')
 parser.add_argument('--model', default='dpc-unet', type=str, help='convlstm, dpc-unet, unet')
 parser.add_argument('--dataset', default='PEV', type=str, help='PEV, PFV, PEA')
-parser.add_argument('--seq_len', default=6, type=int, help='number of frames in each video block')
+parser.add_argument('--seq_len', default=4, type=int, help='number of frames in each video block')
 parser.add_argument('--num_seq', default=4, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=3, type=int)
 parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
@@ -60,7 +60,7 @@ parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
 parser.add_argument('--img_dim', default=128, type=int)
-parser.add_argument('--ts_length', default=10, type=int)
+parser.add_argument('--ts_length', default=16, type=int)
 parser.add_argument('--pad_size', default=0, type=int)
 parser.add_argument('--num_classes', default=2, type=int)
 parser.add_argument('--standardization', default='local', type=str)
@@ -238,13 +238,18 @@ def get_seq(sequence, seq_length):
     return: array with all time-series chunk; prediction size =1, num_seq = 4
     '''
     (I,L,C,H,W) = sequence.shape
-    all_arr = np.zeros((I,L-seq_length+1,seq_length,C,H,W))
+    all_arr = np.zeros((I,int(L//seq_length),seq_length,C,H,W))
     for j in range(I):
-        for i in range(seq_length, L+1):
-            array = sequence[j,i-seq_length:i,:,:,:] # SL, C, H, W
-            all_arr[j,i-seq_length] = array
+        for i in range(0,L+1-seq_length,seq_length):
+            array = sequence[j,i:i+seq_length,:,:,:] # SL, C, H, W
+            all_arr[j,math.ceil(i/seq_length)] = array
 
-    return all_arr
+
+    # all_arr = np.lib.stride_tricks.sliding_window_view(sequence, seq_length, axis=1)
+
+    print('all array shape: ', all_arr.shape)
+
+    return all_arr.copy()
 
 def get_chunks(windows, num_seq):
     '''
@@ -264,43 +269,6 @@ def get_chunks(windows, num_seq):
 
     return all_arr
 
-
-def reverse_chunks(chunks, num_seq):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L2,N,SL,C,H,W) = chunks.shape
-    
-    all_arr = np.zeros((I,L2+num_seq-1,SL,C,H,W))
-    for j in range(I):
-        for i in range(L2):
-            if i < L2-1:
-                array = chunks[j,i,0,:,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:,:] = array
-            elif i == L2-1:
-                array = chunks[j,i,:,:,:,:,:]
-                all_arr[j,i:i+num_seq,:,:,:,:] = array
-            del array
-
-    return all_arr
-
-def reverse_seq(window, seq_length):
-    '''
-    reverse the chunk code -> to window size
-    '''
-    (I,L1,SL,C,H,W) = window.shape
-    all_arr = np.zeros((I,L1+seq_length-1,C,H,W))
-    for j in range(I):
-        for i in range(L1):
-            if i < L1-1:
-                array = window[j,i,0,:,:,:] # L2, N, SL, C, H, W
-                all_arr[j,i,:,:,:] = array
-            elif i == L1-1:
-                array = window[j,i,:,:,:,:]
-                all_arr[j,i:i+seq_length,:,:,:] = array
-            del array
-
-    return all_arr
 
 
 def cal_ndvi(image):
@@ -651,7 +619,7 @@ def get_model(args):
 
 
                 ## MODEL w 8TS 09/26/2024 ## normalization 10000
-                model_checkpoint = f'{str(model_dir)}convlstm_2024-09-26_10band_0.082_epoch_58.pth'
+                model_checkpoint = f'{str(model_dir)}convlstm_2024-11-06_10band_0.062_epoch_96.pth'
             else:
                 model_checkpoint = f'{str(model_dir)}convlstm_2024-03-29_10band_0.011_epoch_129.pth'
 
@@ -691,8 +659,8 @@ def get_model(args):
             # model_checkpoint = f'{str(model_dir)}convgru_2024-05-29_10band_0.044_epoch_116.pth'
 
 
-            ### MODEL w 8ts 09/26/2024 ## normalization 10000
-            model_checkpoint = f'{str(model_dir)}convgru_2024-09-26_10band_0.113_epoch_120.pth'
+            ### MODEL w 8ts 09/26/2024 ## normalization 15000
+            model_checkpoint = f'{str(model_dir)}convgru_2024-11-06_10band_0.074_epoch_86.pth'
         else:
             model_checkpoint = f'{str(model_dir)}convgru_2024-04-09_10band_0.008_epoch_340.pth'
 
@@ -799,8 +767,12 @@ def get_model(args):
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-21-crossentropy_conv3d_std_local_200_0.102_0.2binary_10band_epoch64.pth'
                     #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-23-crossentropy_conv3d_std_local_200_0.112_0.5binary_10band_epoch26.pth'
 
-                    ### 05/29 8ts: 7 ECAS + 1 ETZ ##
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-29-crossentropy_conv3d_std_None_200_0.185_0.3binary_10band_epoch66.pth'
+                    ### 11/05 8ts: 7 ECAS + 1 ETZ ##
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-05-crossentropy_conv3d_std_None_200_0.174_0.4binary_10band_epoch64.pth'
+
+                    ## set 2 10ts ETZ 
+
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-14-crossentropy_conv3d_std_None_200_0.06_0.3binary_10band_epoch40.pth'
 
                     ## noncrop_pct=0.3, noncrop_thresh=0.8
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-05-crossentropy_conv3d_std_None_200_0.065_0.5binary_4band_epoch101.pth'
@@ -820,7 +792,7 @@ def get_model(args):
 
 
                     ## 24ts 09/27/2024
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-27-crossentropy_conv3d_std_None_200_0.147_0.05binary_10band_epoch42.pth'
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-27-crossentropy_conv3d_std_None_200_0.147_0.05binary_10band_epoch42.pth'
 
                     ## 26ts 09/30/2024
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-30-crossentropy_conv3d_std_None_200_0.252_0.0binary_10band_epoch24.pth'
@@ -1035,15 +1007,15 @@ def main():
         #### UPDATE 09/01
         if args.dataset == 'PEV':
             tile = "PEV"
-            filename = "/projects/kwessel4/hls_datacube/hls-PEV.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PEV-epoch2019.hdf5"
 
         elif args.dataset == 'PFV':
             tile='PFV'
-            filename = "/projects/kwessel4/hls_datacube/hls-PFV.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PFV-epoch2019.hdf5"
 
         elif args.dataset == 'PEA':
             tile='PEA'
-            filename = "/projects/kwessel4/hls_datacube/hls-PEA.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PEA-epoch2019.hdf5"
 
         elif args.dataset == 'PGA':
             tile='PGA'
@@ -1081,17 +1053,13 @@ def main():
             tile = "PEV-2016"
             filename = "/projects/kwessel4/hls_datacube/hls-PEV-2016-full.hdf5"
             
-        elif args.dataset == 'PEV_large_2018':
-            tile = "PEV-2016"
-            filename = "/projects/kwessel4/hls_datacube/hls-PEV-2018-full.hdf5"
+        elif args.dataset == 'PEV_large_2019':
+            tile = "PEV-2019"
+            filename = "/projects/kwessel4/hls_datacube/hls-PEV-full-epoch2019.hdf5"
 
-        elif args.dataset == 'PEA_large_2019':
-            tile = "PEA-2019"
-            filename = "/projects/kwessel4/hls_datacube/hls-PEA-full-epoch2019.hdf5"
-
-        elif args.dataset == 'PFV_L_large_2018':
-            tile='PFV-L-2018'
-            filename = "/projects/kwessel4/hls_datacube/hls-PFV-L-2018-full.hdf5"
+        elif args.dataset == 'PFV_L_large_2019':
+            tile='PFV-L-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PFV-L-full-epoch2019.hdf5"
 
         elif args.dataset == 'PFV_R_large_2018':
             tile='PFV-R-2018'
@@ -1113,9 +1081,9 @@ def main():
             tile='PEA-2016'
             filename = "/projects/kwessel4/hls_datacube/hls-PEA-2016-full.hdf5"
 
-        elif args.dataset == 'PEA_large_2018':
-            tile = "PEA-2018"
-            filename = "/projects/kwessel4/hls_datacube/hls-PEA-2018-full.hdf5"
+        elif args.dataset == 'PEA_large_2019':
+            tile = "PEA-2019"
+            filename = "/projects/kwessel4/hls_datacube/hls-PEA-full-epoch2019.hdf5"
 
         elif args.dataset == 'PGA_large_2016':
             tile='PGA-2016'

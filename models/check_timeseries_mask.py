@@ -47,6 +47,8 @@ def rescale_truncate(image):
 
 def filtering_holes(mask_array, name):
 
+    # print(mask_array.shape)
+    # print(np.unique(mask_array))
 
     if 'Tappan14_WV02_20161230' in name:
         mask_array[mask_array==7]=2
@@ -80,12 +82,19 @@ def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_
 
     # mask_dir_path = os.path.join(mask_dir_path, tile)
 
-    mask_lst = sorted(glob.glob(f'{mask_dir_path}/*.tif'))
-
     for idx, file in enumerate(fl_dir):
-        name = re.search(f'{tile}/(.*?).tif', file).group(1)[:22]
-        year_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[:4]
-        date_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[4:]
+        if "P" in tile:
+            name = re.search(f'{tile}/(.*?).tif', file).group(1)[:22]
+            year_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[:4]
+            date_hls = re.search(f'T28{tile}.(.*?)T', file).group(1)[4:]
+
+            mask_lst = sorted(glob.glob(f'{mask_dir_path}/*.tif'))
+        else:
+            name = re.search(f'{tile}/(.*?).tif', file).group(1)[:22]
+            year_hls = re.search(f'1105N-(.*?).tif', file).group(1)[2:]
+            date_hls = re.search(f'1105N-(.*?).tif', file).group(1)[:2]
+
+            mask_lst = sorted(glob.glob(f'/home/geoint/tri/resampled_senegal_planet/*.tif'))
 
         # if name == 'Tappan18_WV03_20160307' or name =='Tappan19_WV02_20180119' or name =='Tappan19_WV02_20180119' or name =='Tappan20_WV02_20130430':
         #     continue
@@ -102,9 +111,17 @@ def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_
 
             img_data = np.squeeze(rxr.open_rasterio(file, masked=False).values)
 
+            # print('img data shape: ', img_data.shape)
+
+            # print('img_data max: ', np.max(img_data[:-1,:,:]))
+            # print('img_data min: ', np.min(img_data[:-1,:,:]))
+
             # ts_dict[name].append(img_data)
             if int(date_hls) not in ts_dict.keys():
-                ts_dict[name][int(date_hls)] = img_data
+                if 'P' in tile:
+                    ts_dict[name][int(date_hls)] = img_data
+                else:
+                    ts_dict[name][int(date_hls)] = img_data[:-1,:,:]
 
         for mask_fl in mask_lst:
             # print(mask_fl)
@@ -112,8 +129,11 @@ def read_data(master_dir, tile='PEA', mask_dir_path='/home/geoint/tri/resampled_
                 # print(name)
                 mask_data = np.squeeze(rxr.open_rasterio(mask_fl, masked=False).values)
                 if name in ts_dict.keys():
-                    # mask_data = filtering_holes(mask_data, name)
-                    mask_dict[name]= mask_data
+                    
+                    if "P" in tile:
+                        mask_dict[name]= mask_data
+                    else:
+                        mask_dict[name] = filtering_holes(mask_data, name)
 
     output_dict = {}
 
@@ -137,6 +157,7 @@ def get_composite(ts_dict):
     # use median composite for frames within steps, e.g. if steps = 3, the composite 3 consecutive frames
     for idx, key in enumerate(sorted(ts_dict.keys())):
 
+        ##### suitable for PEA, PEV tile
         if ts_dict[key].shape[0] < 13:
             print(key, ' ', ts_dict[key].shape)
         
@@ -182,6 +203,52 @@ def get_composite(ts_dict):
             out_lst.append(ts_dict[key])
             key_lst.append(key)
 
+        ############### threshold for PCV tile
+        # if ts_dict[key].shape[0] < 13:
+        #     print(key, ' ', ts_dict[key].shape)
+        
+        # if int(key) > 0 and len(out_lst) == 0:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 30 and len(out_lst) == 1:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 50 and len(out_lst) == 2:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 60 and len(out_lst) == 3:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 100 and len(out_lst) == 4:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+
+        # elif int(key) > 135 and len(out_lst) == 5:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 239 and len(out_lst) == 6:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 279 and len(out_lst) == 7:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 320 and len(out_lst) == 8:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+        # elif int(key) > 340 and len(out_lst) == 9:
+        #     print(key)
+        #     out_lst.append(ts_dict[key])
+        #     key_lst.append(key)
+
 
     out_array = np.stack(out_lst, axis=0)
     del ts_dict
@@ -189,6 +256,7 @@ def get_composite(ts_dict):
     # print(out_array.shape)
 
     return out_array, key_lst
+
 
 def plot_timeseries(
     train_ts_set,
@@ -221,7 +289,8 @@ def plot_timeseries(
 
             ax.set_title(f'Day {dates[idx-1]}', x=0.5, y=0.95, size=8, color='black')
             # image = np.transpose(train_ts_set[(idx-1),1:4,:,:], (1,2,0))
-            image = np.transpose(train_ts_set[(idx-1),:3,:,:], (1,2,0))
+            image = np.transpose(train_ts_set[(idx-1),1:4,:,:], (1,2,0))
+            # image = get_rgb(image)
             image= rescale_image(xr.where(image > -9000, image, -1000))
             plt.axis('off')
             plt.imshow(rescale_truncate(get_rgb(image)))
@@ -229,6 +298,8 @@ def plot_timeseries(
             print('mask shape: ', mask_arr.shape)
             if len(mask_arr.shape) > 2:
                 image = mask_arr[0]
+            else:
+                image = mask_arr
 
             ax.set_title('Label', x=0.5, y=0.95, size=8, color='black')
             # image = mask_arr
@@ -251,7 +322,7 @@ def get_rgb(data):
 
 if __name__ == "__main__":
 
-    tiles=['PGA']
+    tiles=['PEV']
     master_dir = "/home/geoint/tri/match-hls-sen/"
 
     for tile in tiles:
@@ -260,11 +331,17 @@ if __name__ == "__main__":
         output_dict = {}
 
         for key in ts_dict.keys():
-            print(key)
+            print('key: ', key)
             # print(len(ts_dict[key]))
             print(ts_dict[key].keys())
 
-            ts_arr, date_lst = get_composite(ts_dict[key])
+            if "P" in tile:
+                ts_arr, date_lst = get_composite(ts_dict[key])
+            else:
+                out_lst = [ts_dict[key][a] for a in ts_dict[key].keys()]
+                ts_arr = np.stack(out_lst, axis=0)
+                print(ts_arr.shape)
+                date_lst = list(ts_dict[key].keys())
 
             if key not in output_dict.keys():
                 output_dict[key] = ts_arr
@@ -282,23 +359,23 @@ if __name__ == "__main__":
         out_dir = '/home/geoint/tri/hls_datacube'
 
     #     ########################
-        # if not os.path.isfile(f'{out_dir}/hls-{tile}-0906.hdf5'):
+        if not os.path.isfile(f'{out_dir}/hls-{tile}-0930.hdf5'):
 
-        #     h = h5py.File(f'{out_dir}/hls-{tile}-0906.hdf5', 'w')
+            h = h5py.File(f'{out_dir}/hls-{tile}-0930.hdf5', 'w')
 
-        #     for k, v in output_dict.items():
-        #         h.create_dataset(f"{k}_{tile}_ts", data=v, compression="gzip", compression_opts=9)
-        #         h.create_dataset(f"{k}_{tile}_mask", data=mask_dict[k], compression="gzip", compression_opts=9)
-        #     print(f'finished the data processing')
-        # else:
-        #     print('Datacube file already exist!')
+            for k, v in output_dict.items():
+                h.create_dataset(f"{k}_{tile}_ts", data=v, compression="gzip", compression_opts=9)
+                h.create_dataset(f"{k}_{tile}_mask", data=mask_dict[k], compression="gzip", compression_opts=9)
+            print(f'finished the data processing')
+        else:
+            print('Datacube file already exist!')
 
 
     ## Test load h5py file
 
     out_dir = '/home/geoint/tri/hls_datacube'
     print("Test load h5py file")
-    filename= f'{out_dir}/old/planet-etz-2021-0426.hdf5'
+    filename= f'{out_dir}/hls-PDB-0930.hdf5'
     # filename= f'{out_dir}/hls-PEV.hdf5'
 
     with h5py.File(filename, "r") as file:
@@ -313,4 +390,4 @@ if __name__ == "__main__":
     print(ts_arr.shape)
     print(mask_arr.shape)
 
-    plot_timeseries(ts_arr[:10], mask_arr[0,:3], key, ['1','2','3','4','5','6','7','8','9','10','11','12'], 'ETZ')
+    # plot_timeseries(ts_arr[:10], mask_arr[0,:3], key, ['1','2','3','4','5','6','7','8','9','10','11','12'], 'ETZ')
