@@ -350,7 +350,7 @@ def get_train_set(args, list_ts):
         print("Get data from Tappan: ", ts_name)
 
         ### UPDATE 09/01 - new datacube with small TS time series
-        if int(ts_name[6:8]) in [2,4,5,7,17]:
+        if int(ts_name[6:8]) in [2,4,6,7,17]:
             tile ='PFV'
             filename = "/projects/kwessel4/hls_datacube/hls-PFV-epoch2019.hdf5"
         elif int(ts_name[6:8]) < 19:
@@ -716,16 +716,37 @@ def main():
     #             'Tappan23_WV02_20180119',
     #             ]
 
+    ### set 1 
+
+    # list_ts = [
+    #             'Tappan18',
+    #             'Tappan01',
+    #             'Tappan19',
+    #             'Tappan17',
+    #             'Tappan02',
+    #             'Tappan15',
+    #             'Tappan16',
+    #             'Tappan07',
+    #             ]
+
+
+    ### set 2 for 09-26
 
     list_ts = [
                 'Tappan18',
                 'Tappan01',
-                'Tappan19',
-                'Tappan17',
-                'Tappan02',
                 'Tappan15',
+                'Tappan17',
                 'Tappan16',
-                'Tappan07',
+                'Tappan19',
+                'Tappan20',
+                'Tappan23',
+                'Tappan24',
+                'Tappan06',
+                # 'Tappan29',
+                # 'Tappan25',
+                # 'Tappan26',
+                # 'Tappan05'
                 ]
 
                 
@@ -795,19 +816,19 @@ def main():
             num_classes=args.num_classes,
             input_size=(input_size,input_size),
             hidden_dim=200,
-            input_dim=10,
+            input_dim=args.channels,
             kernel_size=(3, 3)
             )
     elif model_option == "convgru":
         model = ConvGRU_Seg(
             num_classes=args.num_classes,
             input_size=(input_size,input_size),
-            input_dim=10,
+            input_dim=args.channels,
             kernel_size=(3, 3),
             hidden_dim=180,
             )
     elif model_option == '3d-unet':
-        model = UNet3D(in_channel=10, n_classes=args.num_classes)
+        model = UNet3D(in_channel=args.channels, n_classes=args.num_classes)
 
     # model = nn.DataParallel(model)
 
@@ -819,7 +840,7 @@ def main():
     criterion_type = args.loss
     if criterion_type == "crossentropy":
         # criterion = models.losses.MultiTemporalCrossEntropy()
-        criterion = criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CrossEntropyLoss()
     elif criterion_type == "focal_tverski":
         criterion = models.losses.FocalTversky()
     elif criterion_type == "dice":
@@ -854,13 +875,13 @@ def main():
     train_segment_dl = DataLoader(train_seg_set, **loader_args_1)
     val_segment_dl = DataLoader(val_seg_set, **loader_args_1)
 
-    print(f"Length of segmentation input training set {len(train_segment_dl)}")
+    print(f"Length of input training set {len(train_segment_dl)}")
     print("Start segmentation training!")
 
     best_acc = 0
     min_loss = np.inf
 
-    early_stopper = EarlyStopper(patience=10, min_delta=0.2)
+    early_stopper = EarlyStopper(patience=20, min_delta=0.2)
 
     for epoch in range(args.start_epoch, args.epochs):
         train_loss = train(train_segment_dl, model, segment_optimizer)
@@ -914,7 +935,7 @@ def main():
                             'optimizer': segment_optimizer.state_dict()}, 
                             is_best, filename=\
                                 os.path.join(model_dir, \
-                                    f'{model_option}_{today}_10band_{np.round(min_loss,3)}_epoch_{str(epoch+1)}.pth'),
+                                    f'{model_option}_{today}_{args.channels}band_{np.round(min_loss,3)}_epoch_{str(epoch+1)}.pth'),
                                 keep_all=False)
             
         # early stopping

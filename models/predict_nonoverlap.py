@@ -155,8 +155,7 @@ def normalize_image(image: np.ndarray, normalize: float):
     Returns:
         normalized np.ndarray
     """
-    if normalize:
-        image = image / normalize
+    image = image / normalize
     return image
 
 
@@ -247,7 +246,7 @@ def get_seq(sequence, seq_length):
 
     # all_arr = np.lib.stride_tricks.sliding_window_view(sequence, seq_length, axis=1)
 
-    print('all array shape: ', all_arr.shape)
+    # print('all array shape: ', all_arr.shape)
 
     return all_arr.copy()
 
@@ -352,16 +351,16 @@ def save_raster(ref_im, prediction, name, out_dir):
                 attrs=ref_im.attrs
             )
 
-    prediction = prediction.where(ref_im != -9999)
+    # prediction = prediction.where(ref_im != -9999)
 
     prediction.attrs['long_name'] = ('dpc')
     prediction = prediction.transpose("band", "y", "x")
 
-    # Set nodata values on mask
-    nodata = prediction.rio.nodata
-    prediction = prediction.where(ref_im != nodata)
-    prediction.rio.write_nodata(
-        -1, encoded=True, inplace=True)
+    ### Set nodata values on mask
+    # nodata = prediction.rio.nodata
+    # prediction = prediction.where(ref_im != nodata)
+    # prediction.rio.write_nodata(
+    #     -1, encoded=True, inplace=True)
 
     # TODO: ADD CLOUDMASKING STEP HERE
     # REMOVE CLOUDS USING THE CURRENT MASK
@@ -528,7 +527,7 @@ def get_model(args):
 
     if model_option == 'unet':
         
-        unet_segment = UNet_test(num_classes=2,segment=True,in_channels=10)
+        unet_segment = UNet_test(num_classes=2,segment=True,in_channels=args.channels)
 
         ### 10 bands
 
@@ -559,7 +558,7 @@ def get_model(args):
 
 
     elif model_option == '3d-unet':
-        model = UNet3D(in_channel=10, n_classes=args.num_classes)
+        model = UNet3D(in_channel=args.channels, n_classes=args.num_classes)
 
         #model_checkpoint = f'{str(model_dir)}3d-unet_2023-11-01_hidden200_10band_ts01_epoch_89.pth'
 
@@ -577,7 +576,15 @@ def get_model(args):
 
 
         ## model trained w 8ts crossentropy (5 ecas 3 etz) 09/26/2024 ## normalization 10000
-        model_checkpoint = f'{str(model_dir)}3d-unet_2024-09-26_10band_0.43_epoch_7.pth'
+        # model_checkpoint = f'{str(model_dir)}3d-unet_2024-09-26_10band_0.43_epoch_7.pth'
+
+        # model_checkpoint = f'{str(model_dir)}3d-unet_2024-11-22_10band_0.199_epoch_19.pth'
+
+
+        ## 10ts from etz
+        # model_checkpoint = f'{str(model_dir)}3d-unet_2024-11-21_10band_0.155_epoch_3.pth'
+
+        model_checkpoint = f'{str(model_dir)}3d-unet_2024-11-25_10band_0.109_epoch_13.pth'
 
         if torch.cuda.is_available():
             model = model.to(cuda)
@@ -593,7 +600,7 @@ def get_model(args):
             num_classes=args.num_classes,
             input_size=(input_size,input_size),
             hidden_dim=hidden_dim,
-            input_dim=10,
+            input_dim=args.channels,
             kernel_size=(3, 3)
             )
  
@@ -618,13 +625,24 @@ def get_model(args):
                 # model_checkpoint = f'{str(model_dir)}convlstm_2024-06-04_10band_0.029_epoch_101.pth'
 
 
-                ## MODEL w 8TS 09/26/2024 ## normalization 10000
-                model_checkpoint = f'{str(model_dir)}convlstm_2024-11-06_10band_0.062_epoch_96.pth'
+                ## MODEL w 8TS 09/26/2024 ## normalization 15000
+                # model_checkpoint = f'{str(model_dir)}convlstm_2024-11-06_10band_0.062_epoch_96.pth'
+
+                # model_checkpoint = f'{str(model_dir)}convlstm_2024-11-22_10band_0.06_epoch_65.pth'
+
+                ## MODEL w 10TS 11/21/2024 ## normalization 15000
+                # model_checkpoint = f'{str(model_dir)}convlstm_2024-11-21_10band_0.068_epoch_53.pth'
+                if args.channels == 10:
+                    model_checkpoint = f'{str(model_dir)}convlstm_2024-12-02_10band_0.036_epoch_119.pth'
+                if args.channels == 4:
+                    model_checkpoint = f'{str(model_dir)}convlstm_2025-05-06_10band_0.081_epoch_32.pth'
             else:
                 model_checkpoint = f'{str(model_dir)}convlstm_2024-03-29_10band_0.011_epoch_129.pth'
 
         if torch.cuda.is_available():
             model = model.to(cuda)
+
+        print(model_checkpoint)
 
         model.load_state_dict(torch.load(model_checkpoint)['state_dict'])
 
@@ -635,7 +653,7 @@ def get_model(args):
         model = ConvGRU_Seg(
                 num_classes=args.num_classes,
                 input_size=(input_size,input_size),
-                input_dim=10,
+                input_dim=args.channels,
                 kernel_size=(3, 3),
                 hidden_dim=180,
             )
@@ -660,7 +678,16 @@ def get_model(args):
 
 
             ### MODEL w 8ts 09/26/2024 ## normalization 15000
-            model_checkpoint = f'{str(model_dir)}convgru_2024-11-06_10band_0.074_epoch_86.pth'
+            # model_checkpoint = f'{str(model_dir)}convgru_2024-11-06_10band_0.074_epoch_86.pth'
+            
+            # model_checkpoint = f'{str(model_dir)}convgru_2024-11-22_10band_0.051_epoch_114.pth'
+
+
+            ### MODEL w 10 ts 11/21/2024 ## normalization 15000
+            # model_checkpoint = f'{str(model_dir)}convgru_2024-11-21_10band_0.061_epoch_104.pth'
+
+            model_checkpoint = f'{str(model_dir)}convgru_2024-12-02_10band_0.02_epoch_72.pth'
+
         else:
             model_checkpoint = f'{str(model_dir)}convgru_2024-04-09_10band_0.008_epoch_340.pth'
 
@@ -769,33 +796,39 @@ def get_model(args):
 
                     ### 11/05 8ts: 7 ECAS + 1 ETZ ##
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-05-crossentropy_conv3d_std_None_200_0.174_0.4binary_10band_epoch64.pth'
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-22-crossentropy_conv3d_std_None_200_0.106_0.3binary_10band_epoch81.pth'
 
                     ## set 2 10ts ETZ 
 
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-14-crossentropy_conv3d_std_None_200_0.06_0.3binary_10band_epoch40.pth'
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-14-crossentropy_conv3d_std_None_200_0.06_0.3binary_10band_epoch40.pth'
 
-                    ## noncrop_pct=0.3, noncrop_thresh=0.8
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-05-crossentropy_conv3d_std_None_200_0.065_0.5binary_4band_epoch101.pth'
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-26-crossentropy_conv3d_std_None_200_0.035_0.0binary_10band_epoch44.pth'
 
-                    ## etz
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-14-crossentropy_conv3d_std_None_200_0.348_0.5binary_10band_epoch28.pth'
+                    ## set 4 2ts WCAS
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-06-crossentropy_conv3d_std_None_200_0.232_0.05binary_10band_epoch64.pth'
 
-                    ## wcas + etz
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-19-crossentropy_conv3d_std_None_200_0.145_0.2binary_10band_epoch114.pth'
+                    ## set 3 11ts ETZ
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-22-crossentropy_conv3d_std_None_200_0.082_0.0binary_10band_epoch114.pth'
 
-                    ## TEST MODEL TRAINED WITH 12 TSs and CROSSENTROPY LOSS
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-01-crossentropy_conv3d_std_local_200_0.016_0.3binary_10band_epoch179.pth'
+                    ## works for large area 11/25
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-24-crossentropy_conv3d_std_None_200_0.139_0.0binary_10band_epoch54.pth'
+
+                    ## include tappan21
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-25-crossentropy_conv3d_std_None_200_0.423_0.0binary_10band_epoch12.pth'
+
+                    ## all tappans training 12/05
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-05-crossentropy_conv3d_std_None_200_0.038_0.0binary_10band_epoch108.pth'
 
 
-                    ## 8ts: 5 ECAS + 3 ETZ 09/26/2024 ## normalization 15000
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-26-crossentropy_conv3d_std_None_200_0.356_0.3binary_10band_epoch58.pth'
+                    ## all tappans 12/22
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-21-crossentropy_conv3d_std_None_200_0.171_0.4binary_10band_epoch39.pth'
 
 
-                    ## 24ts 09/27/2024
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-27-crossentropy_conv3d_std_None_200_0.147_0.05binary_10band_epoch42.pth'
+                    ## all tappans dice loss 12/22
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-23-dice_conv3d_std_None_200_0.063_0.2binary_10band_epoch145.pth'
 
-                    ## 26ts 09/30/2024
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-30-crossentropy_conv3d_std_None_200_0.252_0.0binary_10band_epoch24.pth'
+                    ### MODEL w all ETZ ts 05/08/2025
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-2025-05-08-crossentropy_conv3d_std_None_200_0.154_0.4binary_10band_epoch56.pth'
                 
                     
                 elif args.channels == 4:
@@ -811,13 +844,19 @@ def get_model(args):
                     #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-05-crossentropy_conv3d_std_None_200_0.067_0.5binary_4band_epoch120.pth'
 
                     ## train w ETZ data
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-21-crossentropy_conv3d_std_None_200_0.142_0.1binary_4band_epoch83.pth'
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-21-crossentropy_conv3d_std_None_200_0.142_0.1binary_4band_epoch83.pth'
 
                     ## TEST MODEL TRAINED WITH 12 TSs and CROSSENTROPY LOSS
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-04-30-crossentropy_conv3d_std_local_200_0.009_0.2binary_4band_18_epoch190.pth'
 
                     ## train with additional planet data
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-23-crossentropy_conv3d_std_local_200_0.731_0.3binary_4band_epoch54.pth'
+
+                    ## train on 4-band HLS
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-2025-04-15-crossentropy_conv3d_std_None_200_0.174_0.4binary_4band_epoch30.pth'
+
+                    ## train on SR data
+                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2025-05-13-crossentropy_conv3d_std_None_200_0.337_0.2binary_4band_epoch26.pth'
 
                 elif args.channels == 7:
 
@@ -999,6 +1038,10 @@ def main():
         hls = True
     elif 'planet' in args.dataset:
         hls = True
+    elif 'Tappan' in args.dataset:
+        hls = True
+    elif 's2' in args.dataset:
+        hls = True
     else:
         hls = False
 
@@ -1019,19 +1062,19 @@ def main():
 
         elif args.dataset == 'PGA':
             tile='PGA'
-            filename = "/projects/kwessel4/hls_datacube/hls-PGA-0906.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PGA-epoch2019.hdf5"
 
         elif args.dataset == 'PCV':
             tile='PCV'
-            filename = "/projects/kwessel4/hls_datacube/hls-PCV-ts26.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PCV-epoch2019.hdf5"
 
         elif args.dataset == 'PDA':
             tile='PDA'
-            filename = "/projects/kwessel4/hls_datacube/hls-PDA-0930.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PDA-epoch2019.hdf5"
 
         elif args.dataset == 'PDB':
             tile='PDB'
-            filename = "/projects/kwessel4/hls_datacube/hls-PDB-0930.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PDB-epoch2019.hdf5"
 
     else:
         year = args.dataset[-4:]
@@ -1061,34 +1104,82 @@ def main():
             tile='PFV-L-2019'
             filename = "/projects/kwessel4/hls_datacube/hls-PFV-L-full-epoch2019.hdf5"
 
-        elif args.dataset == 'PFV_R_large_2018':
-            tile='PFV-R-2018'
-            filename = "/projects/kwessel4/hls_datacube/hls-PFV-R-2018-full.hdf5"
+        elif args.dataset == 'PCV_L_large_2019':
+            tile='PCV-L-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PCV-L-full-epoch2019.hdf5"
 
-        elif args.dataset == 'PFA_L_large_2018':
-            tile='PFA-L-2018'
-            filename = "/projects/kwessel4/hls_datacube/hls-PFA-L-2018-full.hdf5"
+        elif args.dataset == 'PCV_large_2019':
+            tile='PCV-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PCV-full-epoch2019.hdf5"
 
-        elif args.dataset == 'PFA_R_large_2018':
-            tile='PFA-R-2018'
-            filename = "/projects/kwessel4/hls_datacube/hls-PFA-R-2018-full.hdf5"
+        elif args.dataset == 'PFV_large_2019':
+            tile='PFV-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PFV-full-epoch2019.hdf5"
 
-        elif args.dataset == 'PCV_large_2017':
-            tile='PCV-2017'
-            filename = "/projects/kwessel4/hls_datacube/hls-PCV-2017-full.hdf5"
+        elif args.dataset == 'PFA_L_large_2019':
+            tile='PFA-L-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PFA-L-full-epoch2019.hdf5"
 
-        elif args.dataset == 'PEA_large_2016':
-            tile='PEA-2016'
-            filename = "/projects/kwessel4/hls_datacube/hls-PEA-2016-full.hdf5"
+        elif args.dataset == 'PFA_R_large_2019':
+            tile='PFA-R-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PFA-R-full-epoch2019.hdf5"
+
+        elif args.dataset == 'PFA_large_2019':
+            tile='PFA-2019'
+            # filename = "/projects/kwessel4/hls_datacube/hls-PFA-full-epoch2019.hdf5"
+            filename = '/projects/kwessel4/hls_datacube/PFA-L30-full-epoch2019.hdf5'
+
+        elif args.dataset == 'PEB_large_2019':
+            tile='PEB-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PEB-full-epoch2019.hdf5"
+
+        elif args.dataset == 'PDA_large_2019':
+            tile='PDA-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PDA-full-epoch2019.hdf5"
+
+        elif args.dataset == 'PDV_large_2019':
+            tile='PDV-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PDV-full-epoch2019.hdf5"
+
+        elif args.dataset == 'PDB_large_2019':
+            tile='PDB-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PDB-full-epoch2019.hdf5"
 
         elif args.dataset == 'PEA_large_2019':
             tile = "PEA-2019"
             filename = "/projects/kwessel4/hls_datacube/hls-PEA-full-epoch2019.hdf5"
 
-        elif args.dataset == 'PGA_large_2016':
-            tile='PGA-2016'
-            filename = "/projects/kwessel4/hls_datacube/hls-PGA-2016-full.hdf5"
+        elif args.dataset == 'PGA_large_2019':
+            tile='PGA-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PGA-full-epoch2019.hdf5"
 
+        elif args.dataset == 'PFB_large_2019':
+            tile='PFB-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PFB-full-epoch2019.hdf5"
+
+        elif args.dataset == 'PGB_large_2019':
+            tile='PGB-2019'
+            filename = "/projects/kwessel4/hls_datacube/hls-PGB-full-epoch2019.hdf5"
+
+        #### SR data Tappan01
+
+        elif args.dataset == 'Tappan01-sr':
+            tile='Tappan01-sr-2019'
+            filename = '/projects/kwessel4/hls_datacube/Tappan01-sr-full-epoch2019.hdf5'
+
+        #### S2 data Tappan01
+
+        elif args.dataset == 'Tappan01-s2':
+            tile='Tappan01-s2-2019'
+            filename = '/projects/kwessel4/hls_datacube/Tappan01-s2-full-epoch2019.hdf5'
+
+        #### large S2 data
+        elif args.dataset == 'PEV-s2':
+            tile='PEV-s2-2019'
+            filename = '/projects/kwessel4/hls_datacube/PEV-s2-full-epoch2019.hdf5'
+
+
+        #### Planet data
 
         elif args.dataset == 'planet_2021':
             tile='planet-cas-2021'
@@ -1103,7 +1194,7 @@ def main():
             tile='planet-tile13'
             filename = "/projects/kwessel4/hls_datacube/planet-etz-ts32-2021-0426.hdf5"
 
-        print('file name: ', filename)
+    print('file name: ', filename)
 
     with h5py.File(filename, "r") as file:
         
@@ -1154,6 +1245,8 @@ def main():
                         ref_im_fl = '/projects/kwessel4/hls_large_refim/Tappan32_WV02_20210507_M1BS_10300100BE8F1E00_planet_mask.tif'
                     elif tile == 'planet-tile13':
                         ref_im_fl = '/projects/kwessel4/hls_large_refim/L15-0951E-1105N-012021.tif'
+                    elif tile=='Tappan01-2019':
+                        ref_im_fl = '/projects/kwessel4/super-resolution/ecas/Tappan01_WV02_20181217_T28PEV_20181216T112451_cutWV_ts01-sr.tif'
 
                     else:
 
@@ -1267,6 +1360,12 @@ def main():
                 ref_im_fl = '/projects/kwessel4/hls_large_refim/Tappan32_WV02_20210507_M1BS_10300100BE8F1E00_planet_mask.tif'
             elif tile == 'planet-tile13':
                 ref_im_fl = '/projects/kwessel4/hls_large_refim/L15-0951E-1105N-012021.tif'
+            elif tile=='Tappan01-sr-2019':
+                ref_im_fl = '/projects/kwessel4/super-resolution/ecas/Tappan01_WV02_20181217_T28PEV_20181216T112451_cutWV_ts01-sr.tif'
+            elif tile=='Tappan01-s2-2019':
+                ref_im_fl = '/projects/kwessel4/hls_large_refim/Tappan01_WV02_20160311_T28PEV_20160311T112102_cutWV_ts01.tif'
+            elif tile=='PEV-s2-2019':
+                ref_im_fl = '/projects/kwessel4/hls_large_refim/T28PEV_20160311T112102_part_0_1.tif'
             else:
                 ## ts_arr = np.transpose(ts_arr, (0,3,1,2))
                 if 'PEV' in tile or 'PEA' in tile:
@@ -1301,7 +1400,12 @@ def main():
                 if args.channels == 10:
                     train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
                 elif args.channels == 4:
-                    train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:4,:,:], np.expand_dims(ts_arr[:total_ts_len,7,:,:], axis=1)), axis=1)
+                    if 'Tappan' in args.dataset:
+                        train_ts_set = ts_arr
+                    elif 's2' in args.dataset:
+                        train_ts_set = ts_arr
+                    else:
+                        train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:4,:,:], np.expand_dims(ts_arr[:total_ts_len,7,:,:], axis=1)), axis=1)
 
                 elif args.channels == 7:
                     train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:4,:,:], np.expand_dims(ts_arr[:total_ts_len,7,:,:], axis=1)), axis=1)

@@ -70,7 +70,7 @@ parser.add_argument('--loss', default='crossentropy', type=str)
 parser.add_argument('--channels', default=10, type=int)
 parser.add_argument('--crop_thresh', default=0.2, type=float, help='binary balance for crop class')
 parser.add_argument('--noncrop_thresh', default=0.2, type=float, help='binary balance for non-crop class')
-parser.add_argument('--noncrop_pct', default=0.2, type=float, help='percentage of image chips for mainly noncrop chips')
+parser.add_argument('--noncrop_pct', default=0.7, type=float, help='percentage of image chips for mainly noncrop chips')
 parser.add_argument('--addindices', default='False', type=str)
 
 def rescale_truncate(image):
@@ -468,10 +468,14 @@ def get_train_set(args, list_ts):
 
         if "planet" in ts_name:
             tile='planet-ts32'
-            filename = 'projects/kwessel4/hls_datacube/planet-tile13-train-0917.hdf5'
+            filename = '/projects/kwessel4/hls_datacube/planet-tile13-train-0917.hdf5'
+
+        if "SR" in ts_name:
+            tile = 'TS01-SR'
+            filename = '/projects/kwessel4/hls_datacube/Tappan01-sr-full-epoch2019.hdf5'
 
         ### UPDATE 09/01 - new datacube with small TS time series
-        if int(ts_name[6:8]) in [2,4,6,7,17]:
+        elif int(ts_name[6:8]) in [2,4,6,7,17]:
             tile ='PFV'
             filename = "/projects/kwessel4/hls_datacube/hls-PFV-epoch2019.hdf5"
         elif int(ts_name[6:8]) < 19:
@@ -479,32 +483,50 @@ def get_train_set(args, list_ts):
             filename = "/projects/kwessel4/hls_datacube/hls-PEV-epoch2019.hdf5"
         elif int(ts_name[6:8]) == 21:
             tile='PDA'
-            filename = "/projects/kwessel4/hls_datacube/hls-PDA-0930.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PDA-epoch2019.hdf5"
         elif int(ts_name[6:8]) < 25:
             tile ='PEA'
             filename = "/projects/kwessel4/hls_datacube/hls-PEA-epoch2019.hdf5"
         elif int(ts_name[6:8]) == 29:
             tile='PDB'
-            filename = "/projects/kwessel4/hls_datacube/hls-PDB-0930.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PDB-epoch2019.hdf5"
         elif int(ts_name[6:8]) < 32:
             tile ='PCV'
-            filename = "/projects/kwessel4/hls_datacube/hls-PCV-ts26.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PCV-epoch2019.hdf5"
         elif int(ts_name[6:8]) >= 32:
             tile ='PGA'
-            filename = "/projects/kwessel4/hls_datacube/hls-PGA-0906.hdf5"
+            filename = "/projects/kwessel4/hls_datacube/hls-PGA-epoch2019.hdf5"
 
 
-        if int(ts_name[6:8]) == 25:
-            args.crop_thresh = 0.05
-        elif int(ts_name[6:8]) == 29:
-            args.crop_thresh = 0.0
+        if 'SR' not in ts_name:
+            if int(ts_name[6:8]) == 25:
+                args.crop_thresh = 0.05
+                args.noncrop_thresh = 0.9
+            elif int(ts_name[6:8]) == 6:
+                args.crop_thresh = 0.05
+                args.noncrop_thresh = 0.9
+            elif int(ts_name[6:8]) == 29:
+                args.crop_thresh = 0.05
+                args.noncrop_thresh = 0.9
+            elif int(ts_name[6:8]) == 21:
+                args.crop_thresh = 0.4
+                args.noncrop_thresh = 0.5
+
+        print(tile)
 
         #### UPDATEs 09/01
-        with h5py.File(filename, "r") as file:
-            ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
-            mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
+        if 'SR' not in ts_name:
+            with h5py.File(filename, "r") as file:
+                ts_arr = file[f'{str(ts_name)}_{str(tile)}_ts'][()]
+                mask_arr = file[f'{str(ts_name)}_{str(tile)}_mask'][()]
+        else:
+            with h5py.File(filename, "r") as file:
+                ts_arr = file['Tappan01_ts'][()]
+
+            mask_arr = np.squeeze(rxr.open_rasterio('/projects/kwessel4/nasa-multiyear-masks/epoch2019/Tappan01-2019.tif', mask=False).values)
 
         print("out ts arr shape: ", ts_arr.shape)
+        print("out mask arr shape: ", mask_arr.shape)
 
         # if ts_arr.shape[0] > args.ts_length:
         #     ts_arr = get_composite(ts_arr, args.ts_length)
@@ -527,7 +549,10 @@ def get_train_set(args, list_ts):
         if args.channels == 10:
             ts_arr = np.concatenate((ts_arr[:args.ts_length,1:-4,:,:], ts_arr[:args.ts_length,-2:,:,:]), axis=1)
         elif args.channels == 4:
-            ts_arr = np.concatenate((ts_arr[:args.ts_length,1:4,:,:], np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)), axis=1)
+            if 'SR' not in ts_name:
+                ts_arr = np.concatenate((ts_arr[:args.ts_length,1:4,:,:], np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)), axis=1)
+            else:
+                ts_arr = ts_arr
         elif args.channels == 7:
             ts_arr = np.concatenate((ts_arr[:args.ts_length,1:4,:,:], np.expand_dims(ts_arr[:args.ts_length,7,:,:], axis=1)), axis=1)
 
@@ -564,6 +589,8 @@ def get_train_set(args, list_ts):
         include = True
         pct_noncrop = args.noncrop_pct
 
+        print("percentage noncrop: ", args.noncrop_pct)
+
         generated_train_patches = 0
         noncrop_count = 0
 
@@ -575,7 +602,7 @@ def get_train_set(args, list_ts):
             if noncrop_count < args.num_chips*pct_noncrop:
 
                 # first condition, tile must have valid classes
-                if (ts.min() < -0.6 or mask.min() < 0):
+                if (ts.min() < -1 or mask.min() < 0):
                     #print('nodata condition not met: ', generated_patches)
                     continue
 
@@ -612,7 +639,7 @@ def get_train_set(args, list_ts):
             else:
 
                 # first condition, tile must have valid classes
-                if (ts.min() < -0.6 or mask.min() < 0):
+                if (ts.min() < -1 or mask.min() < 0):
                     #print('nodata condition not met: ', generated_patches)
                     continue
 
@@ -790,7 +817,7 @@ def get_train_set(args, list_ts):
 
             generated_val_patches += 1
 
-        print('number of entirely noncrop chips: ', noncrop_count)
+        print('number of validation noncrop chips: ', noncrop_count)
 
         val_ts = np.stack(temp_ts_set, axis=0)
         val_mask = np.stack(temp_mask_set, axis=0)
@@ -926,25 +953,59 @@ def main():
     #             'Tappan07',
     #             ]
 
-    ### set 2 for 09-26
+    ### set 3 eetz for 12-23
 
+    # list_ts = [
+    #             'Tappan18',
+    #             # 'Tappan01',
+    #             # 'Tappan15',
+    #             # 'Tappan17',
+    #             # 'Tappan16',
+    #             'Tappan19',
+    #             'Tappan20',
+    #             # 'Tappan23',
+    #             'Tappan32',
+    #             'Tappan33',
+    #             # 'Tappan29',
+    #             # 'Tappan25',
+    #             # 'Tappan26',
+    #             ]
+
+
+    ## only wcas
+
+    # list_ts = [
+    #             'Tappan25',
+    #             'Tappan26',
+    #             ]
+
+
+    ## all available tappan
+
+    # list_ts = [
+    #             # 'Tappan18',
+    #             # 'Tappan01',
+    #             # 'Tappan15',
+    #             # 'Tappan17',
+    #             # 'Tappan16',
+    #             'Tappan19',
+    #             'Tappan20',
+    #             'Tappan23',
+    #             'Tappan24',
+    #             # 'Tappan06',
+    #             'Tappan29',
+    #             # 'Tappan25',
+    #             # 'Tappan26',
+    #             'Tappan21',
+    #             'Tappan32'
+    #             ]
+
+    ### train with SR data (Tappan01)
     list_ts = [
-                'Tappan18',
-                'Tappan01',
-                'Tappan15',
-                'Tappan17',
-                'Tappan16',
-                'Tappan19',
-                'Tappan20',
-                'Tappan23',
-                'Tappan24',
-                'Tappan06'
+                'TS01-SR'
                 ]
 
-
-
     print('training image list: ', list_ts)
-
 
     #list_ts = ['Tappan15_WV02_20160108']
 
