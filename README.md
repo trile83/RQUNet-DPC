@@ -9,7 +9,7 @@ Dense Predictive Coding [model](https://github.com/TengdaHan/DPC) and UNet [mode
 ![Dense Predictive Coding](models/asset/arch.png) <br>
 
 ## HLS time series data
-![HLS data](models/asset/hls-full-rgb.gif) <br>
+![HLS data](models/asset/hls_full_rgb.gif) <br>
 
 ## How to run the code
 Create the Python environment 3.8.12 in terminal/command line for Linux OS <br>
