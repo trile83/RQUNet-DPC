@@ -560,30 +560,8 @@ def get_model(args):
     elif model_option == '3d-unet':
         model = UNet3D(in_channel=args.channels, n_classes=args.num_classes)
 
-        #model_checkpoint = f'{str(model_dir)}3d-unet_2023-11-01_hidden200_10band_ts01_epoch_89.pth'
-
-        ## model trained with 1ts
-        #model_checkpoint = f'{str(model_dir)}3d-unet_2024-03-07_10band_0.04_epoch_39.pth'
-
-        ## model trained with 4ts
-        #model_checkpoint = f'{str(model_dir)}3d-unet_2024-03-29_10band_0.08_epoch_134.pth'
-
-        ## model trained w 8 ts and crossentropy loss
-        #model_checkpoint = f'{str(model_dir)}3d-unet_2024-04-26_10band_0.27_epoch_7.pth'
-
-        ## 05/29 8ts
-        # model_checkpoint = f'{str(model_dir)}3d-unet_2024-06-04_10band_0.185_epoch_21.pth'
-
-
-        ## model trained w 8ts crossentropy (5 ecas 3 etz) 09/26/2024 ## normalization 10000
-        # model_checkpoint = f'{str(model_dir)}3d-unet_2024-09-26_10band_0.43_epoch_7.pth'
 
         # model_checkpoint = f'{str(model_dir)}3d-unet_2024-11-22_10band_0.199_epoch_19.pth'
-
-
-        ## 10ts from etz
-        # model_checkpoint = f'{str(model_dir)}3d-unet_2024-11-21_10band_0.155_epoch_3.pth'
-
         model_checkpoint = f'{str(model_dir)}3d-unet_2024-11-25_10band_0.109_epoch_13.pth'
 
         if torch.cuda.is_available():
@@ -615,23 +593,7 @@ def get_model(args):
             
             ## rescale per-ts, standardization None
             if standardization == 'None' or standardization is None:
-                #model_checkpoint = f'{str(model_dir)}convlstm_2024-03-08_10band_0.003_epoch_91.pth'
-                ## MODEL w 4TS
-                #model_checkpoint = f'{str(model_dir)}convlstm_2024-04-09_10band_0.033_epoch_278.pth'
-                ## MODEL w 8TS
-                #model_checkpoint = f'{str(model_dir)}convlstm_2024-04-26_10band_0.023_epoch_132.pth'
-
-                ## 05/29
-                # model_checkpoint = f'{str(model_dir)}convlstm_2024-06-04_10band_0.029_epoch_101.pth'
-
-
-                ## MODEL w 8TS 09/26/2024 ## normalization 15000
-                # model_checkpoint = f'{str(model_dir)}convlstm_2024-11-06_10band_0.062_epoch_96.pth'
-
-                # model_checkpoint = f'{str(model_dir)}convlstm_2024-11-22_10band_0.06_epoch_65.pth'
-
-                ## MODEL w 10TS 11/21/2024 ## normalization 15000
-                # model_checkpoint = f'{str(model_dir)}convlstm_2024-11-21_10band_0.068_epoch_53.pth'
+                
                 if args.channels == 10:
                     model_checkpoint = f'{str(model_dir)}convlstm_2024-12-02_10band_0.036_epoch_119.pth'
                 if args.channels == 4:
@@ -666,26 +628,9 @@ def get_model(args):
 
         ## rescale per-ts, standardization None
         if standardization == 'None' or standardization is None:
-            #model_checkpoint = f'{str(model_dir)}convgru_2024-03-08_10band_0.005_epoch_86.pth'
-
-            ## MODEL w 4TS
-            #model_checkpoint = f'{str(model_dir)}convgru_2024-04-09_10band_0.019_epoch_340.pth'
-            ## MODEL w 8TS
-            #model_checkpoint = f'{str(model_dir)}convgru_2024-04-26_10band_0.013_epoch_143.pth'
-
-            ## 05/29
-            # model_checkpoint = f'{str(model_dir)}convgru_2024-05-29_10band_0.044_epoch_116.pth'
-
-
-            ### MODEL w 8ts 09/26/2024 ## normalization 15000
-            # model_checkpoint = f'{str(model_dir)}convgru_2024-11-06_10band_0.074_epoch_86.pth'
-            
-            # model_checkpoint = f'{str(model_dir)}convgru_2024-11-22_10band_0.051_epoch_114.pth'
-
 
             ### MODEL w 10 ts 11/21/2024 ## normalization 15000
             # model_checkpoint = f'{str(model_dir)}convgru_2024-11-21_10band_0.061_epoch_104.pth'
-
             model_checkpoint = f'{str(model_dir)}convgru_2024-12-02_10band_0.02_epoch_72.pth'
 
         else:
@@ -740,117 +685,29 @@ def get_model(args):
 
             ## unet segment
             if args.segment_model == 'unet':
-                if args.hidden_dim == 128:
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_10band_ts01_epoch16.pth'
-                elif args.hidden_dim == 160:
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_10band_ts01_epoch15_hidden_dim160.pth'
-                elif args.hidden_dim == 180:
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_180_10band_ts01_epoch16.pth'
-                elif args.hidden_dim == 200:
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-0504-unet_200_10band_ts01_epoch21.pth'
 
-                    ## Work November 2023
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-2023-11-10-composite-unet_200_10band_ts01_epoch50.pth'
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-2023-12-18-composite-local_unet_200_10band_ts01_epoch76.pth'
+                if args.hidden_dim == 200:
                     
                     ## crossentropy loss
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-05-crossentropy_unet_200_0.037_10band_18_epoch182.pth'
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-06-crossentropy_unet_200_0.434_10band_18_epoch5.pth'
-                    
-                    ## dice loss
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-06-dice_unet_200_0.207_10band_18_epoch18.pth'
-
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-06-crossentropy_unet_200_0.434_10band_18_epoch5.pth'
 
             elif args.segment_model == 'conv3d':
                 ## segment 3d
-                ##model_checkpoint = f'{str(model_dir)}dpc-unet-encoder-2024-03-02-composite-local_conv3d_200_0.034869713336229326_10band_ts15-18_epoch7.pth'
                 
                 ## 10 channels
                 if args.channels == 10:
-                    ## WORKS AS OF MAR 20 2024
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-06-crossentropy_conv3d_200_0.021_10band_18_epoch88.pth'
-
-                    ## TEST 0.15 binary crop balance -> WORKS AS OF MAR 20
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-20-crossentropy_conv3d_std_local_200_0.024_0.15binary_10band_18_epoch30.pth'
-
-                    ## TEST MODEL TRAINED WITH 3 TSs
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-21-crossentropy_conv3d_std_local_200_0.176_0.2binary_10band_18_epoch52.pth'
-
-                    ## TEST MODEL TRAINED WITH 4 TSs and DICE LOSS
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-22-dice_conv3d_std_local_200_0.078_0.2binary_10band_18_epoch123.pth'
-
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-04-12-dice_conv3d_std_local_200_0.073_0.2binary_10band_18_epoch104.pth'
-
-                    ## TEST MODEL TRAINED WITH 4 TSs and CROSSENTROPY LOSS
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-04-25-crossentropy_conv3d_std_local_100_4ts_0.19_0.3binary_10band_epoch19.pth'
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-02-crossentropy_conv3d_std_local_200_0.012_0.6binary_10band_epoch157.pth'
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-16-crossentropy_conv3d_std_local_200_0.247_0.3binary_10band_epoch16.pth'
-
-                    ## TEST MODEL TRAINED WITH 8 TSs and DICE LOSS
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-23-dice_conv3d_std_local_200_0.031_0.5binary_10band_epoch117.pth'
-                
-                    ## TEST MODEL TRAINED WITH 8 TSs and CROSSENTROPY LOSS
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-04-25-crossentropy_conv3d_std_local_100_0.068_0.3binary_10band_epoch71.pth'
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-21-crossentropy_conv3d_std_local_200_0.102_0.2binary_10band_epoch64.pth'
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-05-23-crossentropy_conv3d_std_local_200_0.112_0.5binary_10band_epoch26.pth'
-
-                    ### 11/05 8ts: 7 ECAS + 1 ETZ ##
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-05-crossentropy_conv3d_std_None_200_0.174_0.4binary_10band_epoch64.pth'
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-22-crossentropy_conv3d_std_None_200_0.106_0.3binary_10band_epoch81.pth'
-
-                    ## set 2 10ts ETZ 
-
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-14-crossentropy_conv3d_std_None_200_0.06_0.3binary_10band_epoch40.pth'
-
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-26-crossentropy_conv3d_std_None_200_0.035_0.0binary_10band_epoch44.pth'
-
-                    ## set 4 2ts WCAS
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-06-crossentropy_conv3d_std_None_200_0.232_0.05binary_10band_epoch64.pth'
-
-                    ## set 3 11ts ETZ
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-22-crossentropy_conv3d_std_None_200_0.082_0.0binary_10band_epoch114.pth'
 
                     ## works for large area 11/25
                     # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-24-crossentropy_conv3d_std_None_200_0.139_0.0binary_10band_epoch54.pth'
 
-                    ## include tappan21
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-11-25-crossentropy_conv3d_std_None_200_0.423_0.0binary_10band_epoch12.pth'
 
+                    ### WORK on S10
                     ## all tappans training 12/05
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-05-crossentropy_conv3d_std_None_200_0.038_0.0binary_10band_epoch108.pth'
-
-
-                    ## all tappans 12/22
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-21-crossentropy_conv3d_std_None_200_0.171_0.4binary_10band_epoch39.pth'
-
-
-                    ## all tappans dice loss 12/22
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-23-dice_conv3d_std_None_200_0.063_0.2binary_10band_epoch145.pth'
-
-                    ### MODEL w all ETZ ts 05/08/2025
-                    model_checkpoint = f'{str(model_dir)}dpc-unet-2025-05-08-crossentropy_conv3d_std_None_200_0.154_0.4binary_10band_epoch56.pth'
+                    model_checkpoint = f'{str(model_dir)}dpc-unet-2024-12-05-crossentropy_conv3d_std_None_200_0.038_0.0binary_10band_epoch108.pth'
                 
                     
                 elif args.channels == 4:
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-03-15-crossentropy_conv3d_std_local_200_0.022_0.2binary_4band_18_epoch61.pth'
 
-                    ## MODEL TRAINED WITH 1TS, ts_length=18
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-04-30-crossentropy_conv3d_std_local_100_0.017_0.2binary_4band_1ts_tslen18_epoch88.pth'
-                    ## MODEL TRAINED WITH 8TS
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-04-26-crossentropy_conv3d_std_local_200_0.088_0.2binary_4band_18_epoch49.pth'
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-05-crossentropy_conv3d_std_None_200_0.136_0.5binary_4band_epoch55.pth'
-                    
-                    ## worked as of 06/05/2024
-                    #model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-05-crossentropy_conv3d_std_None_200_0.067_0.5binary_4band_epoch120.pth'
-
-                    ## train w ETZ data
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-06-21-crossentropy_conv3d_std_None_200_0.142_0.1binary_4band_epoch83.pth'
-
-                    ## TEST MODEL TRAINED WITH 12 TSs and CROSSENTROPY LOSS
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-04-30-crossentropy_conv3d_std_local_200_0.009_0.2binary_4band_18_epoch190.pth'
-
-                    ## train with additional planet data
-                    # model_checkpoint = f'{str(model_dir)}dpc-unet-2024-09-23-crossentropy_conv3d_std_local_200_0.731_0.3binary_4band_epoch54.pth'
 
                     ## train on 4-band HLS
                     model_checkpoint = f'{str(model_dir)}dpc-unet-2025-04-15-crossentropy_conv3d_std_None_200_0.174_0.4binary_4band_epoch30.pth'
@@ -1042,10 +899,12 @@ def main():
         hls = True
     elif 's2' in args.dataset:
         hls = True
+    elif 's10' in args.dataset:
+        hls = True
     else:
         hls = False
 
-    if not hls:
+    if not hls: ## Predict small area overlap with WV
         
         #### UPDATE 09/01
         if args.dataset == 'PEV':
@@ -1076,7 +935,7 @@ def main():
             tile='PDB'
             filename = "/projects/kwessel4/hls_datacube/hls-PDB-epoch2019.hdf5"
 
-    else:
+    else: ## Predict large HLS tiles
         year = args.dataset[-4:]
 
         print('year: ', year)
@@ -1174,9 +1033,25 @@ def main():
             filename = '/projects/kwessel4/hls_datacube/Tappan01-s2-full-epoch2019.hdf5'
 
         #### large S2 data
-        elif args.dataset == 'PEV-s2':
-            tile='PEV-s2-2019'
-            filename = '/projects/kwessel4/hls_datacube/PEV-s2-full-epoch2019.hdf5'
+        # elif args.dataset == 'PEV-s2':
+        #     tile='PEV-s2-2019'
+        #     filename = '/projects/kwessel4/hls_datacube/PEV-s2-full-epoch2019.hdf5'
+
+        elif args.dataset == 'PEV-s10':
+            tile='PEV-s10-2019'
+            filename = '/projects/kwessel4/hls_datacube/PEV-S10-full-epoch2019_part_0_0.hdf5'
+
+        elif args.dataset == 'PEA-s10':
+            tile='PEA-s10-2019'
+            filename = '/projects/kwessel4/hls_datacube/PEA-S10-full-epoch2019_part_1_1.hdf5'
+
+        elif args.dataset == 'PEV-s10-mc':
+            tile='PEV-s10-mc-2019'
+            filename = '/projects/kwessel4/hls_datacube/PEV-S10-MC-full-epoch2019.hdf5'
+
+        elif args.dataset == 'PEA-s10-mc':
+            tile='PEA-s10-mc-2019'
+            filename = '/projects/kwessel4/hls_datacube/PEA-S10-MC-full-epoch2019.hdf5'
 
 
         #### Planet data
@@ -1198,6 +1073,7 @@ def main():
 
     with h5py.File(filename, "r") as file:
         
+        #### for small cut overlap WV area
         if not hls:
             metrics_output_filename = f'/projects/kwessel4/dpc/output/csv/{args.model}_{today}_metrics.csv'
             metrics_csv_columns = ['filename','accuracy', 'precision', 'recall', 'f1_score', 'iou']
@@ -1272,14 +1148,6 @@ def main():
                     
                     if ts_arr.shape[0] < args.ts_length and model_option == 'dpc-unet':
                         continue
-
-
-                    # if model_option == 'dpc-unet' or model_option == '3d-unet':
-                    #     if args.channels == 10:
-                    #         train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
-                    #     elif args.channels == 4:
-                    #         train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:4,:,:], np.expand_dims(ts_arr[:total_ts_len,7,:,:], axis=1)), axis=1)
-                    # else:
                         
                     if args.channels == 10:
                         train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
@@ -1296,13 +1164,7 @@ def main():
                         train_ts_set = out_ts
                         del out_ts
 
-                    # if ts_arr.shape[0] > 10:
-                    #     train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
-                    # else:
-                    #     if model_option == 'dpc-unet' or model_option == '3d-unet':
-                    #         continue
-                    #     else:
-                    #         train_ts_set = np.concatenate((ts_arr[:,1:-4,:,:], ts_arr[:,-2:,:,:]), axis=1)
+
 
                     print('train ts shape before predicting: ', train_ts_set.shape)
 
@@ -1343,7 +1205,7 @@ def main():
                     del prediction
                     del ref_im
 
-        ## Predict large HLS
+        ## Predict large HLS tiles
         else:
 
             key = list(file.keys())
@@ -1364,8 +1226,23 @@ def main():
                 ref_im_fl = '/projects/kwessel4/super-resolution/ecas/Tappan01_WV02_20181217_T28PEV_20181216T112451_cutWV_ts01-sr.tif'
             elif tile=='Tappan01-s2-2019':
                 ref_im_fl = '/projects/kwessel4/hls_large_refim/Tappan01_WV02_20160311_T28PEV_20160311T112102_cutWV_ts01.tif'
-            elif tile=='PEV-s2-2019':
-                ref_im_fl = '/projects/kwessel4/hls_large_refim/T28PEV_20160311T112102_part_0_1.tif'
+            # elif tile=='PEV-s2-2019':
+            #     ref_im_fl = '/projects/kwessel4/hls_large_refim/T28PEV_20160311T112102_part_0_0.tif'
+
+            #####################
+
+            elif tile=='PEV-s10-2019':
+                ref_im_fl = '/projects/kwessel4/hls_large_refim/HLS.S10.T28PEV.2016011T112432.v2_part_0_0.tif'
+
+            elif tile=='PEA-s10-2019':
+                ref_im_fl = '/projects/kwessel4/hls_large_refim/HLS.S10.T28PEA.2016071T112102.v2_part_1_1.tif'
+
+            elif tile == 'PEV-s10-mc-2019':
+                ref_im_fl = '/projects/kwessel4/hls_large_refim/HLS.M30.S2.2016061.2016091.v2.0.tif'
+
+            elif tile == 'PEA-s10-mc-2019':
+                ref_im_fl = '/projects/kwessel4/hls_large_refim/HLS.M30.PEA.S2.2016061.2016091.v2.0.tif'
+
             else:
                 ## ts_arr = np.transpose(ts_arr, (0,3,1,2))
                 if 'PEV' in tile or 'PEA' in tile:
@@ -1398,7 +1275,13 @@ def main():
             
             if 'planet' not in args.dataset:
                 if args.channels == 10:
-                    train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
+                    if args.dataset == 'PEV-s10-mc' or args.dataset == 'PEA-s10-mc':
+                        ts_arr[ts_arr < 0] = -0.1
+                        train_ts_set = ts_arr
+                        train_ts_set[:,2,:,:] = ts_arr[:,7,:,:]
+                        train_ts_set[:,7,:,:] = ts_arr[:,2,:,:]
+                    else:
+                        train_ts_set = np.concatenate((ts_arr[:total_ts_len,1:-4,:,:], ts_arr[:total_ts_len,-2:,:,:]), axis=1)
                 elif args.channels == 4:
                     if 'Tappan' in args.dataset:
                         train_ts_set = ts_arr
@@ -1477,16 +1360,3 @@ if __name__ == '__main__':
     main()
     torch.cuda.empty_cache()
 
-    # python models/predict_sliding.py --gpu 0 --model convlstm --dataset Tappan13
-    # python models/predict_sliding.py --gpu 0 --model convgru --dataset Tappan15
-    # python models/predict_sliding.py --gpu 0 --model convgru --dataset Tappan15 --ts_length 30
-    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet-vae --dataset Tappan01
-    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset Tappan01
-    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset PEV_2021
-    # python models/predict_sliding.py --gpu 0 --model unet --dataset Tappan01
-    # python models/predict_sliding.py --gpu 0 --model convgru --dataset PEV_2021
-    # python models/predict_sliding.py --gpu 0 --model convlstm --dataset PEV_2021 --hidden_dim 200
-    # python models/predict_sliding.py --gpu 0 --model 3d-unet --dataset Tappan01 --img_dim 16 --ts_length 16 --hidden_dim 160
-    # python models/predict_sliding.py --gpu 0 --model 3d-unet --dataset PEV_2021 --img_dim 16 --ts_length 16 --hidden_dim 160
-    # python models/predict_sliding.py --gpu 0 --model decision-tree --dataset Tappan01
-    # python models/predict_sliding.py --gpu 0 --model dpc-unet --net unet --dataset PEV_2021 --segment_model conv2d
