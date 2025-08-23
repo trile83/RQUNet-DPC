@@ -444,12 +444,6 @@ def add_indices(data):
 
 def get_train_set(args, list_ts):
     
-    # filename = "/home/geoint/tri/hls_ts_video/hls_data_final.hdf5"
-    # filename = "/home/geoint/tri/hls_ts_video/hls_data_inc_cloud.hdf5"
-
-    ### UPDATE 09/01 - new datacube with small TS time series
-    # if tile =='PEV':
-    #     filename = "/projects/kwessel4/hls_datacube/hls-ecas-PEV-0901.hdf5"
 
     train_ts_set = []
     train_mask_set = []
@@ -879,12 +873,6 @@ def main():
     # prepare data
     ##### REMEMBER TO CHECK IF THE IMAGE IS CHIPPED IN THE NO-DATA REGION, MAKE SURE IT HAS DATA.
     ### hls data
-    #ts_name=args.dataset
-    #tile='PEV'
-    
-    #list_ts = ['Tappan18_WV02_20170126']
-
-    #list_ts = ['Tappan01_WV02_20181217']
     
     ### set 1 for 05-29 results
     # list_ts = [
@@ -901,104 +889,27 @@ def main():
     #             'Tappan23_WV02_20180119',
     #             'Tappan18_WV03_20160617'
     #             ]
+   
 
+    # all available tappan
 
-
-    ### set 2 for 09-26
-
-    # list_ts = [
-    #             'Tappan18_WV02_20170126',
-    #             'Tappan01_WV02_20181217',
-    #             'Tappan15_WV02_20160108',
-    #             'Tappan17_WV02_20181217',
-    #             'Tappan16_WV02_20180508',
-    #             'Tappan19_WV03_20160617',
-    #             'Tappan20_WV02_20190127',
-    #             'Tappan23_WV02_20180119',
-    #             ]
-
-    ## ETZ
-    # list_ts = [
-    #             'Tappan32_WV03_20160217',
-    #             'Tappan01_WV02_20181217',
-    #             'Tappan19_WV03_20160617',
-    #             'Tappan18_WV02_20170126',
-    #             'Tappan32_WV03_20170529',
-    #             'Tappan24_WV02_20180119',
-    #             'Tappan23_WV02_20170126',
-    #             'Tappan20_WV02_20180328'
-    #             ]
-
-    # list_ts = [
-    #             'Tappan32_WV03_20160217',
-    #             'Tappan26_WV02_20200203',
-    #             'Tappan19_WV03_20160617',
-    #             'Tappan18_WV02_20170126',
-    #             'Tappan32_WV03_20170529',
-    #             'Tappan24_WV02_20180119',
-    #             'Tappan23_WV02_20170126',
-    #             'Tappan26_WV02_20171201'
-    #             ]
-
-
-    ### set 1 for 05-29 results
-    # list_ts = [
-    #             'Tappan18',
-    #             'Tappan01',
-    #             'Tappan19',
-    #             'Tappan17',
-    #             'Tappan02',
-    #             'Tappan15',
-    #             'Tappan16',
-    #             'Tappan07',
-    #             ]
-
-    ### set 3 eetz for 12-23
-
-    # list_ts = [
-    #             'Tappan18',
-    #             # 'Tappan01',
-    #             # 'Tappan15',
-    #             # 'Tappan17',
-    #             # 'Tappan16',
-    #             'Tappan19',
-    #             'Tappan20',
-    #             # 'Tappan23',
-    #             'Tappan32',
-    #             'Tappan33',
-    #             # 'Tappan29',
-    #             # 'Tappan25',
-    #             # 'Tappan26',
-    #             ]
-
-
-    ## only wcas
-
-    # list_ts = [
-    #             'Tappan25',
-    #             'Tappan26',
-    #             ]
-
-
-    ## all available tappan
-
-    # list_ts = [
-    #             # 'Tappan18',
-    #             # 'Tappan01',
-    #             # 'Tappan15',
-    #             # 'Tappan17',
-    #             # 'Tappan16',
-    #             'Tappan19',
-    #             'Tappan20',
-    #             'Tappan23',
-    #             'Tappan24',
-    #             # 'Tappan06',
-    #             'Tappan29',
-    #             # 'Tappan25',
-    #             # 'Tappan26',
-    #             'Tappan21',
-    #             'Tappan32'
-    #             ]
+    list_ts = [
+                'Tappan18',
+                'Tappan01',
+                'Tappan15',
+                'Tappan17',
+                'Tappan16',
+                'Tappan19',
+                'Tappan20',
+                'Tappan23',
+                'Tappan24',
+                'Tappan06',
+                'Tappan29',
+                'Tappan25',
+                'Tappan26',
+                'Tappan21',
+                'Tappan32'
+                ]
 
     ### train with SR data (Tappan01)
     list_ts = [
@@ -1400,4 +1311,3 @@ if __name__ == '__main__':
     main()
 
     torch.cuda.empty_cache()
-    # python models/train_dpc_seg.py --net unet-vae --dataset Tappan01 --epochs 100
