@@ -16,6 +16,10 @@ Create the Python environment 3.8.12 in terminal/command line for Linux OS <br>
 ```conda env create -f environment.yml``` <br>
 ```conda activate env``` <br>
 
+### Sample images into timeseries dataset
+To preprocess images to hdf5 datacube
+```python preprocess/create_full_hls_datacube.py``` <br>
+
 To train DPC+UNet model for image segmentation, prepare the Dataset in time series format for Pytorch: T x C x H x W <br>
 ```python models/train_dpc_seg_nonoverlap.py --net unet --dataset Tappan01 --img_dim 64 --epochs 100 --lr 1e-3``` <br>
 To train UNet mean-frame segmentation model <br>
