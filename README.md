@@ -18,7 +18,7 @@ Create the Python environment 3.8.12 in terminal/command line for Linux OS <br>
 
 ### Sample images into timeseries dataset
 To preprocess images to hdf5 datacube <br>
-```python preprocess/create_full_hls_datacube.py``` <br>
+```python models/create_timeseries.py``` <br>
 
 
 ### Training DPC and other DL models
