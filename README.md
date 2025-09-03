@@ -30,6 +30,8 @@ To train UNet mean-frame segmentation model <br>
 To train benchmark model, ConvLSTM or ConvGRU <br>
 ```python models/train_benchmodel.py --model convlstm --dataset Tappan01 --img_dim 64 --epochs 100```
 
+### Prediction
+
 To perform prediction for small tiles of large raster, same dataset format <br>
 ```python models/predict_nonoverlap.py```
 
