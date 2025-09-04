@@ -24,16 +24,20 @@ To preprocess images to hdf5 datacube <br>
 ### Training DPC and other DL models
 
 To train DPC+UNet model for image segmentation, prepare the Dataset in time series format for Pytorch: T x C x H x W <br>
-```python models/train_dpc_seg_nonoverlap.py --net unet --dataset Tappan01 --img_dim 64 --epochs 100 --lr 1e-3``` <br>
+```python RQUNet-DPC/models/train_dpc_seg_nonoverlap.py --img_dim 64 --epochs 150 --standardization None --segment_model conv3d --ts_length 16 --net unet --channels 10 --loss dice --noncrop_pct 0.7 --noncrop_thresh 0.7 --crop_thresh 0.2 --num_chips 50 --rescale None --num_val 10 --addindices False``` <br>
+
+To train benchmark models, ConvLSTM or ConvGRU or 3D UNet <br>
+```python RQUNet-DPC/models/train_benchmodel.py --model 3d-unet --img_dim 64 --epochs 120 --standardization None --noncrop_pct 0.1 --noncrop_thresh 0.3 --crop_thresh 0.5 --num_chips 50``` <br>
+```python RQUNet-DPC/models/train_benchmodel.py --model convlstm --img_dim 64 --epochs 120 --standardization None --noncrop_pct 0.1 --noncrop_thresh 0.3 --crop_thresh 0.5 --num_chips 50``` <br>
+```python RQUNet-DPC/models/train_benchmodel.py --model convgru --img_dim 64 --epochs 120 --standardization None --noncrop_pct 0.1 --noncrop_thresh 0.3 --crop_thresh 0.5 --num_chips 50``` <br>
+
 To train UNet mean-frame segmentation model <br>
 ```python models/train_unet_meanframe.py``` <br>
-To train benchmark model, ConvLSTM or ConvGRU <br>
-```python models/train_benchmodel.py --model convlstm --dataset Tappan01 --img_dim 64 --epochs 100```
 
 ### Prediction
 
 To perform prediction for small tiles of large raster, same dataset format <br>
-```python models/predict_nonoverlap.py```
+```python RQUNet-DPC/models/predict_nonoverlap.py --img_dim 64 --model dpc-unet --segment_model conv3d --ts_length 16 --dataset PEV --net unet --channels 10 --standardization None --rescale None --saveproba False --addindices False```
 
 To perform window sliding prediction, run the file <br>
 ```python RQUNet-DPC/models/predict_nonoverlap.py --img_dim 64 --model dpc-unet --segment_model conv3d --ts_length 16 --dataset PEV_large_2019 --net unet --channels 10 --standardization None --rescale None --addindices False``` <br>
