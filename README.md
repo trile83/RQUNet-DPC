@@ -41,7 +41,7 @@ To perform prediction for small tiles of large raster, same dataset format <br>
 
 To perform window sliding prediction, run the file <br>
 ```python RQUNet-DPC/models/predict_nonoverlap.py --img_dim 64 --model dpc-unet --segment_model conv3d --ts_length 16 --dataset PEV_large_2019 --net unet --channels 10 --standardization None --rescale None --addindices False``` <br>
-```python RQUNet-DPC/models/predict_nonoverlap.py --img_dim 64 --model 3d-unet --ts_length 16 --dataset PFB_large_2019 --net unet --channels 10 --standardization None --rescale None --saveproba False``` <br>
+```python RQUNet-DPC/models/predict_nonoverlap.py --img_dim 64 --model 3d-unet --ts_length 16 --dataset PEV_large_2019 --channels 10 --standardization None --rescale None --saveproba False --addindices False``` <br>
 
 To run experiment DPC+Poisson segmentation <br>
 ```python dpc_poisson.py``` <br>
